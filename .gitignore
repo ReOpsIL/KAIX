@@ -1,0 +1,74 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE files
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.tmp
+*.temp
+
+# Logs
+*.log
+logs/
+
+# Configuration files with secrets
+config/local.toml
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Build outputs
+dist/
+build/
+
+# Package managers
+node_modules/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# AI-specific ignores
+.aiignore
+*.prompt
+chat_history.json
+context_cache/
+
+# Local development
+local/
+scratch/
+experiments/
+
+# Documentation build
+book/
+
+# Testing
+test-results/
+screenshots/
