@@ -3,13 +3,12 @@
 use super::{ContextConfig, ContextEntry, FileMetadata};
 use crate::llm::LlmProvider;
 use crate::utils::errors::KaiError;
-use crate::utils::fs::{discover_files, should_ignore_file, resolve_path_pattern, expand_glob_pattern};
 use crate::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use tokio::fs;
-use ignore::{Walk, WalkBuilder};
+use ignore::WalkBuilder;
 use serde::{Serialize, Deserialize};
 
 /// Global context that maintains a summary of the entire project
@@ -30,6 +29,15 @@ pub struct GlobalContext {
     file_discovery_cache: Option<(DateTime<Utc>, Vec<PathBuf>)>,
     /// Statistics about the context
     stats: GlobalContextStats,
+    /// Memory management settings
+    #[serde(skip)]
+    memory_config: ContextMemoryConfig,
+    /// Cache of file summaries for quick access
+    #[serde(skip)]
+    summary_cache: HashMap<PathBuf, CachedFileSummary>,
+    /// Priority queue for context eviction
+    #[serde(skip)]
+    access_tracker: HashMap<PathBuf, FileAccessInfo>,
 }
 
 /// Statistics about the global context
@@ -65,6 +73,91 @@ impl Default for GlobalContextStats {
     }
 }
 
+/// Memory configuration for context management
+#[derive(Debug, Clone)]
+pub struct ContextMemoryConfig {
+    /// Maximum total memory usage in bytes
+    pub max_total_memory_bytes: usize,
+    /// Maximum number of cached file summaries
+    pub max_cached_summaries: usize,
+    /// Cache TTL in hours
+    pub cache_ttl_hours: u32,
+    /// Enable aggressive memory management
+    pub aggressive_cleanup: bool,
+}
+
+impl Default for ContextMemoryConfig {
+    fn default() -> Self {
+        Self {
+            max_total_memory_bytes: 100 * 1024 * 1024, // 100MB
+            max_cached_summaries: 1000,
+            cache_ttl_hours: 24,
+            aggressive_cleanup: false,
+        }
+    }
+}
+
+/// Cached file summary with metadata
+#[derive(Debug, Clone)]
+struct CachedFileSummary {
+    /// The cached summary
+    summary: String,
+    /// File metadata when summary was generated
+    metadata: FileMetadata,
+    /// When this summary was cached
+    cached_at: DateTime<Utc>,
+    /// How many times this cache entry has been accessed
+    access_count: usize,
+    /// Hash of the file content when summary was generated
+    content_hash: u64,
+}
+
+/// File access tracking information
+#[derive(Debug, Clone)]
+struct FileAccessInfo {
+    /// When the file was first accessed
+    first_accessed: DateTime<Utc>,
+    /// When the file was last accessed
+    last_accessed: DateTime<Utc>,
+    /// Number of times accessed
+    access_count: usize,
+    /// Priority boost for important files
+    priority_boost: f64,
+}
+
+impl FileAccessInfo {
+    /// Calculate priority score for eviction (lower = more likely to evict)
+    fn priority_score(&self) -> f64 {
+        let now = Utc::now();
+        let age_hours = now.signed_duration_since(self.last_accessed).num_hours() as f64;
+        let recency_score = 1.0 / (1.0 + age_hours);
+        let frequency_score = (self.access_count as f64).ln() + 1.0;
+        
+        recency_score * frequency_score + self.priority_boost
+    }
+}
+
+/// Memory usage statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextMemoryStats {
+    /// Total memory usage in bytes
+    pub total_memory_bytes: usize,
+    /// Memory used by file contexts
+    pub file_contexts_memory: usize,
+    /// Number of cached summaries
+    pub summary_cache_entries: usize,
+    /// Memory used by summary cache
+    pub summary_cache_memory_bytes: usize,
+    /// Number of access tracker entries
+    pub access_tracker_entries: usize,
+    /// Memory used by project summary
+    pub project_summary_memory_bytes: usize,
+    /// Configured memory limit
+    pub memory_limit_bytes: usize,
+    /// Current memory usage as percentage of limit
+    pub memory_usage_percentage: u8,
+}
+
 impl GlobalContext {
     /// Create a new global context
     pub fn new(working_directory: PathBuf, config: ContextConfig) -> Self {
@@ -76,6 +169,25 @@ impl GlobalContext {
             last_updated: Utc::now(),
             file_discovery_cache: None,
             stats: GlobalContextStats::default(),
+            memory_config: ContextMemoryConfig::default(),
+            summary_cache: HashMap::new(),
+            access_tracker: HashMap::new(),
+        }
+    }
+    
+    /// Create a new global context with custom memory settings
+    pub fn with_memory_config(working_directory: PathBuf, config: ContextConfig, memory_config: ContextMemoryConfig) -> Self {
+        Self {
+            working_directory,
+            file_contexts: HashMap::new(),
+            project_summary: None,
+            config,
+            last_updated: Utc::now(),
+            file_discovery_cache: None,
+            stats: GlobalContextStats::default(),
+            memory_config,
+            summary_cache: HashMap::new(),
+            access_tracker: HashMap::new(),
         }
     }
 
@@ -145,7 +257,7 @@ impl GlobalContext {
         Ok(())
     }
 
-    /// Update context for a specific file
+    /// Update context for a specific file with memory management
     pub async fn update_file_context(
         &mut self,
         relative_path: &Path,
@@ -156,6 +268,8 @@ impl GlobalContext {
         
         if !full_path.exists() {
             self.file_contexts.remove(relative_path);
+            self.summary_cache.remove(relative_path);
+            self.access_tracker.remove(relative_path);
             return Ok(());
         }
 
@@ -170,16 +284,159 @@ impl GlobalContext {
         if metadata.size > self.config.max_file_size {
             return Ok(());
         }
+        
+        // Check memory limits before processing
+        self.enforce_memory_limits().await?;
+        
+        // Check cache first
+        if let Some(cached) = self.summary_cache.get(relative_path) {
+            if cached.metadata.modified_at == metadata.modified_at {
+                // Update access info
+                self.update_access_info(relative_path.to_path_buf());
+                
+                        // Use cached summary
+                let context_entry = ContextEntry::new(
+                    relative_path.to_path_buf(), 
+                    cached.summary.clone(), 
+                    metadata
+                );
+                self.file_contexts.insert(relative_path.to_path_buf(), context_entry);
+                // Update access info after using cache
+                self.update_access_info(relative_path.to_path_buf());
+                return Ok(());
+            }
+        }
 
-        let content = std::fs::read_to_string(&full_path)
+        let content = tokio::fs::read_to_string(&full_path).await
             .map_err(|e| KaiError::file_system(&full_path, e))?;
 
         let summary = self.generate_file_summary(&content, relative_path, llm_provider, model).await?;
         
-        let context_entry = ContextEntry::new(relative_path.to_path_buf(), summary, metadata);
+        // Cache the summary
+        let cached_summary = CachedFileSummary {
+            summary: summary.clone(),
+            metadata: metadata.clone(),
+            cached_at: Utc::now(),
+            access_count: 1,
+            content_hash: self.calculate_content_hash(&content),
+        };
+        self.summary_cache.insert(relative_path.to_path_buf(), cached_summary);
+        
+        let context_entry = ContextEntry::new(relative_path.to_path_buf(), summary.clone(), metadata);
         self.file_contexts.insert(relative_path.to_path_buf(), context_entry);
         
+        // Update access tracking after inserting
+        self.update_access_info(relative_path.to_path_buf());
+        
         Ok(())
+    }
+    
+    /// Enforce memory limits by evicting least recently used entries
+    async fn enforce_memory_limits(&mut self) -> Result<()> {
+        // Check total memory usage
+        let current_memory = self.estimate_memory_usage();
+        
+        if current_memory <= self.memory_config.max_total_memory_bytes {
+            return Ok(());
+        }
+        
+        tracing::info!("Memory limit exceeded ({} bytes), starting eviction", current_memory);
+        
+        // Sort files by access priority (LRU eviction)
+        let mut candidates: Vec<_> = self.access_tracker.iter()
+            .map(|(path, access)| (path.clone(), access.priority_score()))
+            .collect();
+            
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        
+        let mut freed_memory = 0;
+        let target_memory = (self.memory_config.max_total_memory_bytes as f64 * 0.8) as usize; // Target 80% usage
+        
+        for (path, _score) in candidates {
+            if current_memory - freed_memory <= target_memory {
+                break;
+            }
+            
+            // Remove from all caches
+            if let Some(context) = self.file_contexts.remove(&path) {
+                freed_memory += self.estimate_context_size(&context);
+            }
+            
+            if let Some(cached) = self.summary_cache.remove(&path) {
+                freed_memory += cached.summary.len() + std::mem::size_of::<CachedFileSummary>();
+            }
+            
+            self.access_tracker.remove(&path);
+        }
+        
+        tracing::info!("Evicted {} bytes from context cache", freed_memory);
+        Ok(())
+    }
+    
+    /// Update access information for a file
+    fn update_access_info(&mut self, path: PathBuf) {
+        let access_info = self.access_tracker.entry(path).or_insert_with(|| FileAccessInfo {
+            first_accessed: Utc::now(),
+            last_accessed: Utc::now(),
+            access_count: 0,
+            priority_boost: 0.0,
+        });
+        
+        access_info.last_accessed = Utc::now();
+        access_info.access_count += 1;
+    }
+    
+    /// Estimate memory usage of the context
+    fn estimate_memory_usage(&self) -> usize {
+        let file_contexts_size: usize = self.file_contexts.iter()
+            .map(|(_, context)| self.estimate_context_size(context))
+            .sum();
+            
+        let summary_cache_size: usize = self.summary_cache.iter()
+            .map(|(_, cached)| cached.summary.len() + std::mem::size_of::<CachedFileSummary>())
+            .sum();
+            
+        let project_summary_size = self.project_summary.as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0);
+            
+        file_contexts_size + summary_cache_size + project_summary_size
+    }
+    
+    /// Estimate memory usage of a single context entry
+    fn estimate_context_size(&self, context: &ContextEntry) -> usize {
+        context.summary.len() + 
+        context.path.to_string_lossy().len() +
+        std::mem::size_of::<ContextEntry>()
+    }
+    
+    /// Calculate content hash for caching
+    fn calculate_content_hash(&self, content: &str) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        content.hash(&mut hasher);
+        hasher.finish()
+    }
+    
+    /// Clean up old cache entries
+    pub fn cleanup_caches(&mut self) {
+        let cutoff_time = Utc::now() - chrono::Duration::hours(self.memory_config.cache_ttl_hours as i64);
+        
+        // Remove old cached summaries
+        self.summary_cache.retain(|_, cached| cached.cached_at > cutoff_time);
+        
+        // Clean up access tracker for non-existent files
+        let existing_files: HashSet<_> = self.file_contexts.keys().cloned().collect();
+        self.access_tracker.retain(|path, _| existing_files.contains(path));
+        
+        // Clear file discovery cache if too old
+        if let Some((cache_time, _)) = &self.file_discovery_cache {
+            if Utc::now().signed_duration_since(*cache_time).num_minutes() > 30 {
+                self.file_discovery_cache = None;
+            }
+        }
     }
 
     /// Get context for files matching a pattern with intelligent content handling
@@ -287,24 +544,226 @@ impl GlobalContext {
         summary
     }
 
-    /// Check if any tracked files have been modified
+    /// Check if any tracked files have been modified with detailed analysis
     pub async fn has_modifications(&self) -> Result<bool> {
+        self.check_modifications_detailed().await.map(|result| !result.modified_files.is_empty())
+    }
+    
+    /// Get detailed information about file modifications
+    pub async fn check_modifications_detailed(&self) -> Result<ModificationCheckResult> {
+        let mut result = ModificationCheckResult::new();
+        
         for (relative_path, context) in &self.file_contexts {
             let full_path = self.working_directory.join(relative_path);
-            if context.is_outdated(&full_path)? {
-                return Ok(true);
+            
+            if !full_path.exists() {
+                result.deleted_files.push(relative_path.clone());
+                continue;
+            }
+            
+            match context.is_outdated(&full_path) {
+                Ok(true) => {
+                    // Get modification details
+                    if let Ok(metadata) = fs::metadata(&full_path).await {
+                        if let Ok(modified_time) = metadata.modified() {
+                            let modified_datetime: DateTime<Utc> = modified_time.into();
+                            let age = Utc::now().signed_duration_since(modified_datetime);
+                            
+                            let mod_info = FileModificationInfo {
+                                path: relative_path.clone(),
+                                last_known_modified: context.metadata.modified_at,
+                                current_modified: modified_datetime,
+                                size_changed: metadata.len() != context.metadata.size,
+                                old_size: context.metadata.size,
+                                new_size: metadata.len(),
+                                modification_age_seconds: age.num_seconds().abs() as u64,
+                            };
+                            
+                            result.modified_files.push(mod_info);
+                        }
+                    }
+                }
+                Ok(false) => {
+                    result.unchanged_files += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check modification for {}: {}", full_path.display(), e);
+                    result.error_files.push((relative_path.clone(), e.to_string()));
+                }
             }
         }
-        Ok(false)
+        
+        // Check for new files
+        let current_files = match self.discover_files_with_advanced_filtering_const().await {
+            Ok(files) => files,
+            Err(e) => {
+                tracing::warn!("Failed to discover files for modification check: {}", e);
+                return Ok(result);
+            }
+        };
+        
+        for file_path in current_files {
+            let relative_path = match file_path.strip_prefix(&self.working_directory) {
+                Ok(rel) => rel.to_path_buf(),
+                Err(_) => continue,
+            };
+            
+            if !self.file_contexts.contains_key(&relative_path) {
+                result.new_files.push(relative_path);
+            }
+        }
+        
+        result.total_tracked_files = self.file_contexts.len();
+        result.check_completed_at = Utc::now();
+        
+        Ok(result)
+    }
+    
+    /// Discover files without mutating self (const version)
+    async fn discover_files_with_advanced_filtering_const(&self) -> Result<Vec<PathBuf>> {
+        let mut builder = WalkBuilder::new(&self.working_directory);
+        
+        builder
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .add_custom_ignore_filename(".aiignore")
+            .hidden(false)
+            .follow_links(self.config.follow_symlinks);
+            
+        if let Some(depth) = self.config.max_depth {
+            builder.max_depth(Some(depth));
+        }
+        
+        let walker = builder.build();
+        let mut files = Vec::new();
+        
+        for result in walker {
+            match result {
+                Ok(entry) => {
+                    if entry.file_type().map_or(false, |ft| ft.is_file()) {
+                        let path = entry.path().to_path_buf();
+                        if self.should_include_file_const(&path).await? {
+                            files.push(path);
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to process file entry: {}", err);
+                }
+            }
+        }
+        
+        Ok(files)
+    }
+    
+    /// Check if file should be included (const version)
+    async fn should_include_file_const(&self, path: &Path) -> Result<bool> {
+        // Check file size limit
+        if let Ok(metadata) = fs::metadata(path).await {
+            if metadata.len() > self.config.max_file_size {
+                return Ok(false);
+            }
+        }
+        
+        // Check exclude patterns
+        let path_str = path.to_string_lossy();
+        for pattern in &self.config.exclude_patterns {
+            if glob::Pattern::new(pattern)
+                .map_err(|e| KaiError::context(format!("Invalid glob pattern '{}': {}", pattern, e)))?
+                .matches(&path_str) {
+                return Ok(false);
+            }
+        }
+        
+        // Check if it's a binary file
+        if self.is_likely_binary_file(path).await? {
+            return Ok(false);
+        }
+        
+        // Check for unimportant files
+        if self.is_unimportant_file(path) {
+            return Ok(false);
+        }
+        
+        Ok(true)
+    }
+    
+    /// Update only modified files incrementally
+    pub async fn update_modified_files(
+        &mut self, 
+        llm_provider: &dyn LlmProvider, 
+        model: &str
+    ) -> Result<IncrementalUpdateResult> {
+        let modification_check = self.check_modifications_detailed().await?;
+        let mut update_result = IncrementalUpdateResult::new();
+        
+        // Remove deleted files
+        for deleted_path in &modification_check.deleted_files {
+            self.file_contexts.remove(deleted_path);
+            update_result.removed_files.push(deleted_path.clone());
+        }
+        
+        // Add new files
+        for new_path in &modification_check.new_files {
+            match self.update_file_context(new_path, llm_provider, model).await {
+                Ok(_) => update_result.added_files.push(new_path.clone()),
+                Err(e) => {
+                    tracing::warn!("Failed to add new file {}: {}", new_path.display(), e);
+                    update_result.failed_files.push((new_path.clone(), e.to_string()));
+                }
+            }
+        }
+        
+        // Update modified files
+        for mod_info in &modification_check.modified_files {
+            match self.update_file_context(&mod_info.path, llm_provider, model).await {
+                Ok(_) => update_result.updated_files.push(mod_info.path.clone()),
+                Err(e) => {
+                    tracing::warn!("Failed to update modified file {}: {}", mod_info.path.display(), e);
+                    update_result.failed_files.push((mod_info.path.clone(), e.to_string()));
+                }
+            }
+        }
+        
+        // Regenerate project summary if significant changes
+        let significant_changes = update_result.added_files.len() + 
+                                update_result.removed_files.len() + 
+                                update_result.updated_files.len();
+                                
+        if significant_changes > 0 {
+            if let Err(e) = self.regenerate_project_summary(llm_provider, model).await {
+                tracing::warn!("Failed to regenerate project summary: {}", e);
+                update_result.project_summary_updated = false;
+            } else {
+                update_result.project_summary_updated = true;
+            }
+        }
+        
+        update_result.total_changes = significant_changes;
+        update_result.completed_at = Utc::now();
+        self.last_updated = Utc::now();
+        
+        // Clear file discovery cache to force refresh next time
+        self.file_discovery_cache = None;
+        
+        tracing::info!(
+            "Incremental update completed: {} added, {} updated, {} removed, {} failed",
+            update_result.added_files.len(),
+            update_result.updated_files.len(),
+            update_result.removed_files.len(),
+            update_result.failed_files.len()
+        );
+        
+        Ok(update_result)
     }
 
-    /// Get statistics about the global context
+    /// Get comprehensive statistics about the global context
     pub async fn get_stats(&self) -> Result<super::manager::ContextStats> {
-        let total_files = self.file_contexts.len();
         let mut outdated_files = 0;
         let mut total_size_bytes = 0;
         let mut languages = std::collections::HashSet::new();
-
+        
         for (relative_path, context) in &self.file_contexts {
             let full_path = self.working_directory.join(relative_path);
             if context.is_outdated(&full_path)? {
@@ -317,14 +776,39 @@ impl GlobalContext {
                 languages.insert(language.clone());
             }
         }
-
+        
         Ok(super::manager::ContextStats {
-            total_files,
+            total_files: self.file_contexts.len(),
             outdated_files,
             total_size_bytes,
             languages: languages.into_iter().collect(),
             last_updated: self.last_updated,
         })
+    }
+    
+    /// Get detailed statistics including the new stats
+    pub fn get_detailed_stats(&self) -> &GlobalContextStats {
+        &self.stats
+    }
+    
+    /// Get memory usage statistics
+    pub fn get_memory_stats(&self) -> ContextMemoryStats {
+        let total_memory = self.estimate_memory_usage();
+        let cache_size = self.summary_cache.len();
+        let cache_memory: usize = self.summary_cache.iter()
+            .map(|(_, cached)| cached.summary.len() + std::mem::size_of::<CachedFileSummary>())
+            .sum();
+        
+        ContextMemoryStats {
+            total_memory_bytes: total_memory,
+            file_contexts_memory: self.file_contexts.len() * std::mem::size_of::<ContextEntry>(),
+            summary_cache_entries: cache_size,
+            summary_cache_memory_bytes: cache_memory,
+            access_tracker_entries: self.access_tracker.len(),
+            project_summary_memory_bytes: self.project_summary.as_ref().map(|s| s.len()).unwrap_or(0),
+            memory_limit_bytes: self.memory_config.max_total_memory_bytes,
+            memory_usage_percentage: (total_memory as f64 / self.memory_config.max_total_memory_bytes as f64 * 100.0) as u8,
+        }
     }
 
     /// Discover all relevant files in the project with intelligent caching and filtering
@@ -846,16 +1330,16 @@ impl GlobalContext {
     ) -> Result<String> {
         let context = self.build_file_context_prompt(file_path, language);
         let prompt = format!(
-            "{}\n\n"
-            "Please provide a concise but comprehensive summary of this {} file. Include:\n"
-            "• Primary purpose and role in the project\n"
-            "• Key functions, classes, types, or components defined\n"
-            "• Important dependencies and relationships\n"
-            "• Notable patterns, algorithms, or architectural decisions\n"
-            "• Public interfaces or APIs exposed\n"
-            "• Any configuration, constants, or important data structures\n\n"
-            "Keep the summary focused and under 300 words. Format as structured text.\n\n"
-            "File content:\n```{}\n{}\n```",
+            "{}\n\n\
+            Please provide a concise but comprehensive summary of this {} file. Include:\n\
+            • Primary purpose and role in the project\n\
+            • Key functions, classes, types, or components defined\n\
+            • Important dependencies and relationships\n\
+            • Notable patterns, algorithms, or architectural decisions\n\
+            • Public interfaces or APIs exposed\n\
+            • Any configuration, constants, or important data structures\n\n\
+            Keep the summary focused and under 300 words. Format as structured text.\n\n\
+            File content:\n```{}\n{}\n```",
             context,
             language.to_lowercase(),
             language.to_lowercase(),
@@ -890,9 +1374,9 @@ impl GlobalContext {
         let mut chunk_summaries = Vec::new();
         for (i, chunk) in chunks.iter().enumerate() {
             let chunk_prompt = format!(
-                "Summarize this portion ({}/{}) of a {} file. Focus on key definitions, "
-                "logic, and important details. Keep summary concise (under 100 words):\n\n"
-                "```{}\n{}\n```",
+                "Summarize this portion ({}/{}) of a {} file. Focus on key definitions, \
+                logic, and important details. Keep summary concise (under 100 words):\n\n\
+                ```{}\n{}\n```",
                 i + 1,
                 chunks.len(),
                 language,
@@ -914,14 +1398,14 @@ impl GlobalContext {
         let combined_summaries = chunk_summaries.join("\n\n");
         
         let final_prompt = format!(
-            "{}\n\n"
-            "Based on these partial summaries of a {} file, create a comprehensive overview that:\n"
-            "• Describes the overall purpose and architecture\n"
-            "• Highlights the most important functions, classes, and components\n"
-            "• Identifies key relationships and dependencies\n"
-            "• Notes significant patterns or design decisions\n\n"
-            "Partial summaries:\n{}\n\n"
-            "Provide a unified summary under 400 words:",
+            "{}\n\n\
+            Based on these partial summaries of a {} file, create a comprehensive overview that:\n\
+            • Describes the overall purpose and architecture\n\
+            • Highlights the most important functions, classes, and components\n\
+            • Identifies key relationships and dependencies\n\
+            • Notes significant patterns or design decisions\n\n\
+            Partial summaries:\n{}\n\n\
+            Provide a unified summary under 400 words:",
             context,
             language,
             combined_summaries
@@ -944,10 +1428,10 @@ impl GlobalContext {
         };
         
         format!(
-            "File: {}\n"
-            "Language: {}\n"
-            "{}\n"
-            "Project: {} ({})",
+            "File: {}\n\
+            Language: {}\n\
+            {}\n\
+            Project: {} ({})",
             relative_path.display(),
             language,
             directory_context,
@@ -988,7 +1472,7 @@ impl GlobalContext {
     
     /// Split content by logical code blocks (functions, classes, etc.)
     fn split_by_logical_blocks(&self, lines: &[&str], max_size: usize, min_size: usize) -> Vec<String> {
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
         let mut current_chunk = Vec::new();
         let mut current_size = 0;
         let mut brace_depth = 0;
@@ -1000,7 +1484,7 @@ impl GlobalContext {
             for ch in line.chars() {
                 match ch {
                     '{' => brace_depth += 1,
-                    '}' => brace_depth = brace_depth.saturating_sub(1),
+                    '}' => brace_depth = (brace_depth as i32).saturating_sub(1).max(0) as usize,
                     _ => {}
                 }
             }
@@ -1028,7 +1512,7 @@ impl GlobalContext {
     
     /// Split Python code by functions and classes
     fn split_python_by_functions(&self, lines: &[&str], max_size: usize, min_size: usize) -> Vec<String> {
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
         let mut current_chunk = Vec::new();
         let mut current_size = 0;
         
@@ -1070,7 +1554,7 @@ impl GlobalContext {
     
     /// Split by sections (for markdown and text files)
     fn split_by_sections(&self, lines: &[&str], max_size: usize, _min_size: usize) -> Vec<String> {
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
         let mut current_chunk = Vec::new();
         let mut current_size = 0;
         
@@ -1105,7 +1589,7 @@ impl GlobalContext {
     
     /// Simple split by line count as fallback
     fn split_by_line_count(&self, lines: &[&str], max_size: usize) -> Vec<String> {
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
         let mut current_chunk = Vec::new();
         let mut current_size = 0;
         
@@ -1174,3 +1658,116 @@ impl GlobalContext {
 
 /// Alias for backward compatibility
 pub type FileContext = ContextEntry;
+
+/// Detailed information about file modifications
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileModificationInfo {
+    /// Path of the modified file
+    pub path: PathBuf,
+    /// Last known modification time in context
+    pub last_known_modified: DateTime<Utc>,
+    /// Current modification time on filesystem
+    pub current_modified: DateTime<Utc>,
+    /// Whether the file size changed
+    pub size_changed: bool,
+    /// Previous file size
+    pub old_size: u64,
+    /// Current file size
+    pub new_size: u64,
+    /// How long ago the modification occurred (in seconds)
+    pub modification_age_seconds: u64,
+}
+
+/// Result of checking for file modifications
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModificationCheckResult {
+    /// Files that have been modified since last context update
+    pub modified_files: Vec<FileModificationInfo>,
+    /// Files that have been deleted
+    pub deleted_files: Vec<PathBuf>,
+    /// New files discovered
+    pub new_files: Vec<PathBuf>,
+    /// Files that couldn't be checked due to errors
+    pub error_files: Vec<(PathBuf, String)>,
+    /// Number of files that haven't changed
+    pub unchanged_files: usize,
+    /// Total number of files being tracked
+    pub total_tracked_files: usize,
+    /// When the check was completed
+    pub check_completed_at: DateTime<Utc>,
+}
+
+impl ModificationCheckResult {
+    pub fn new() -> Self {
+        Self {
+            modified_files: Vec::new(),
+            deleted_files: Vec::new(),
+            new_files: Vec::new(),
+            error_files: Vec::new(),
+            unchanged_files: 0,
+            total_tracked_files: 0,
+            check_completed_at: Utc::now(),
+        }
+    }
+    
+    /// Get a summary of the changes
+    pub fn summary(&self) -> String {
+        format!(
+            "Modifications: {} modified, {} new, {} deleted, {} unchanged, {} errors",
+            self.modified_files.len(),
+            self.new_files.len(),
+            self.deleted_files.len(),
+            self.unchanged_files,
+            self.error_files.len()
+        )
+    }
+}
+
+/// Result of incremental context updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncrementalUpdateResult {
+    /// Files that were successfully added to context
+    pub added_files: Vec<PathBuf>,
+    /// Files that were successfully updated in context
+    pub updated_files: Vec<PathBuf>,
+    /// Files that were removed from context
+    pub removed_files: Vec<PathBuf>,
+    /// Files that failed to update with error messages
+    pub failed_files: Vec<(PathBuf, String)>,
+    /// Whether the project summary was updated
+    pub project_summary_updated: bool,
+    /// Total number of changes made
+    pub total_changes: usize,
+    /// When the update was completed
+    pub completed_at: DateTime<Utc>,
+}
+
+impl IncrementalUpdateResult {
+    pub fn new() -> Self {
+        Self {
+            added_files: Vec::new(),
+            updated_files: Vec::new(),
+            removed_files: Vec::new(),
+            failed_files: Vec::new(),
+            project_summary_updated: false,
+            total_changes: 0,
+            completed_at: Utc::now(),
+        }
+    }
+    
+    /// Check if any changes were made
+    pub fn has_changes(&self) -> bool {
+        self.total_changes > 0
+    }
+    
+    /// Get a summary of the update results
+    pub fn summary(&self) -> String {
+        format!(
+            "Update completed: {} added, {} updated, {} removed, {} failed",
+            self.added_files.len(),
+            self.updated_files.len(),
+            self.removed_files.len(),
+            self.failed_files.len()
+        )
+    }
+}

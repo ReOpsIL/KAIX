@@ -8,8 +8,13 @@ This document contains the architecture diagrams for the KAI-X AI coding assista
 graph TB
     subgraph "User Interface Layer"
         CLI[CLI Interface]
-        TUI[Terminal UI Components]
-        Events[Event System]
+        ChatUI[Chat Component]
+        PlanUI[Plan Visualization]
+        StatusUI[Status Component]
+        ProgressUI[Progress Component]
+        InputService[Input Buffer Service]
+        HistoryService[History Service]
+        CompletionService[Completion Service]
     end
     
     subgraph "Core Application"
@@ -33,9 +38,11 @@ graph TB
     end
     
     subgraph "Planning & Context"
-        Planning[Planning Manager]
-        PlanContext[Plan Context]
-        GlobalContext[Global Context]
+        AgenticCoordinator[Agentic Planning Coordinator]
+        PlanContext[Enhanced Plan Context]
+        GlobalContext[Advanced Global Context]
+        HealthMonitor[Context Health Monitor]
+        MemoryManager[Context Memory Manager]
     end
     
     subgraph "Utilities & Support"
@@ -46,8 +53,13 @@ graph TB
     
     %% User Interface connections
     CLI --> Main
-    TUI --> UI
-    Events --> UI
+    ChatUI --> UI
+    PlanUI --> UI
+    StatusUI --> UI
+    ProgressUI --> UI
+    InputService --> UI
+    HistoryService --> UI
+    CompletionService --> UI
     
     %% Core Application connections
     Main --> Config
@@ -61,19 +73,22 @@ graph TB
     LLM --> Gemini
     LLM --> Streaming
     Engine --> LLM
-    Planning --> LLM
+    AgenticCoordinator --> LLM
     
     %% Execution Layer connections
     Engine --> Executor
     Engine --> Queue
-    Engine --> Planning
+    Engine --> AgenticCoordinator
     Executor --> FileSystem
     Executor --> Utils
     
     %% Context connections
     Context --> GlobalContext
     Context --> PlanContext
-    Planning --> PlanContext
+    Context --> HealthMonitor
+    Context --> MemoryManager
+    AgenticCoordinator --> PlanContext
+    AgenticCoordinator --> Context
     Engine --> Context
     
     %% Support connections
@@ -105,30 +120,37 @@ graph TB
 
 ### User Interface Layer
 - **CLI Interface**: Command-line argument parsing and main entry point
-- **Terminal UI Components**: Interactive terminal user interface elements
-- **Event System**: Handles user input events and UI interactions
+- **Chat Component**: Interactive chat interface for AI conversations with message history
+- **Plan Visualization**: Real-time display of execution plans with task status and progress
+- **Status Component**: Application status monitoring with execution state visualization
+- **Progress Component**: Task progress tracking with visual progress indicators
+- **Input Buffer Service**: Advanced text editing with multi-line support, cursor management, and completion integration
+- **History Service**: Command history with fuzzy search and persistent storage
+- **Completion Service**: Intelligent auto-completion for commands, files, and context-aware suggestions
 
 ### Core Application
-- **main.rs**: Application entry point, initializes all systems
-- **Configuration Manager**: Handles application configuration and settings
-- **Context Manager**: Manages application state and context
-- **UI Manager**: Coordinates user interface components
+- **main.rs**: Application entry point, initializes all systems and coordinates startup
+- **Configuration Manager**: Handles application configuration, settings validation, and runtime updates
+- **Context Manager**: Advanced context orchestration with health monitoring and memory management
+- **UI Manager**: Coordinates sophisticated ratatui-based user interface components
 
 ### AI Processing Layer
-- **LLM Provider Factory**: Creates and manages AI provider instances
-- **OpenRouter Provider**: Integration with OpenRouter API
-- **Gemini Provider**: Integration with Google Gemini API
-- **Streaming Support**: Handles streaming responses from AI providers
+- **LLM Provider Factory**: Creates and manages AI provider instances with trait-based abstraction
+- **OpenRouter Provider**: Integration with OpenRouter API featuring retry logic and error handling
+- **Gemini Provider**: Integration with Google Gemini API with message conversion and tool support
+- **Streaming Support**: Handles real-time streaming responses from AI providers with chunk processing
 
 ### Execution Layer
-- **Execution Engine**: Main orchestrator for task execution with agentic loop
-- **Task Executor**: Executes individual tasks (file operations, commands, etc.)
-- **Task Queue System**: Manages dual-queue system for task scheduling
+- **Execution Engine**: Main orchestrator coordinating with agentic planning system
+- **Task Executor**: Comprehensive task execution supporting file operations, commands, code analysis, and content generation
+- **Task Queue System**: Advanced queue management with priority handling and task dependencies
 
 ### Planning & Context
-- **Planning Manager**: Handles intelligent task planning
-- **Plan Context**: Maintains context specific to execution plans
-- **Global Context**: Manages global application state and context
+- **Agentic Planning Coordinator**: Sophisticated autonomous planning system with message-based communication, priority handling, and adaptive execution
+- **Enhanced Plan Context**: Advanced plan tracking with dependency management, output tracking, variable storage, and memory statistics
+- **Advanced Global Context**: Comprehensive context management with memory limits, modification tracking, file summaries, and incremental updates
+- **Context Health Monitor**: System health monitoring with validation, maintenance operations, and performance metrics
+- **Context Memory Manager**: Memory usage optimization with caching strategies and cleanup operations
 
 ### Utilities & Support
 - **Path Utils**: File path manipulation utilities

@@ -12,6 +12,11 @@ graph TD
         Reqwest[reqwest - HTTP client]
         Serde[serde - Serialization]
         Tracing[tracing - Logging]
+        Ratatui[ratatui - Terminal UI]
+        FuzzyMatcher[fuzzy-matcher - Fuzzy search]
+        Ignore[ignore - File filtering]
+        Chrono[chrono - Date/time]
+        Uuid[uuid - UUID generation]
     end
     
     subgraph "Core Modules"
@@ -45,7 +50,7 @@ graph TD
     
     subgraph "Planning Module"
         PlanningCore[planning/mod.rs]
-        PlanManager[planning/manager.rs]
+        AgenticCoordinator[planning/manager.rs - Agentic Coordinator]
     end
     
     subgraph "UI Module"
@@ -62,7 +67,12 @@ graph TD
     LLMCore --> Reqwest
     LLMCore --> Serde
     Context --> Serde
+    Context --> Chrono
     Config --> Serde
+    UICore --> Ratatui
+    Services --> FuzzyMatcher
+    Context --> Ignore
+    PlanningCore --> Uuid
     
     %% Core module relationships
     Main --> Lib
@@ -94,9 +104,10 @@ graph TD
     Executor --> Utils
     
     %% Planning module relationships
-    PlanningCore --> PlanManager
-    PlanManager --> LLMCore
-    PlanManager --> PlanContext
+    PlanningCore --> AgenticCoordinator
+    AgenticCoordinator --> LLMCore
+    AgenticCoordinator --> PlanContext
+    AgenticCoordinator --> ExecutionCore
     
     %% UI module internal relationships
     UICore --> Components

@@ -2,7 +2,7 @@
 
 use crate::utils::errors::KaiError;
 use crate::Result;
-use fuzzy_matcher::{FuzzyMatcher, SkimMatcherV2};
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use std::collections::VecDeque;
 use std::path::Path;
 use tokio::fs;

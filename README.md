@@ -4,12 +4,16 @@ A sophisticated Rust-based AI coding assistant CLI that enhances your developmen
 
 ## 🚀 Features
 
-- **AI-Powered Code Assistance**: Intelligent code suggestions and completions
-- **Multiple LLM Provider Support**: Integration with various AI language models
-- **Interactive CLI Interface**: User-friendly command-line interface with TUI components
-- **File System Integration**: Smart file handling and project navigation
-- **Asynchronous Processing**: High-performance async operations
-- **Extensible Architecture**: Modular design for easy customization
+- **Agentic AI Coordination**: Sophisticated agentic planning coordinator with autonomous task execution and adaptive planning
+- **Multiple LLM Provider Support**: Integration with OpenRouter and Gemini AI providers with streaming support
+- **Advanced Terminal UI**: Rich terminal user interface with ratatui featuring chat components, plan visualization, status tracking, and progress monitoring
+- **Intelligent Context Management**: Advanced context system with memory management, health monitoring, file modification tracking, and incremental updates
+- **Smart Text Editing**: Professional text editing capabilities with input buffering, command history, fuzzy search, and intelligent auto-completion
+- **Comprehensive Task Execution**: Multi-type task executor supporting file operations, command execution, code analysis, and content generation
+- **Message-Based Communication**: Asynchronous message passing with priority handling for user prompts and system coordination
+- **Performance Monitoring**: Built-in metrics tracking, health checks, and maintenance operations
+- **File System Integration**: Smart file discovery with advanced filtering, glob pattern support, and ignore file handling
+- **Extensible Architecture**: Modular design with trait-based abstractions for easy customization and extension
 
 ## 📦 Installation
 

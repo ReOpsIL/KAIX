@@ -94,7 +94,7 @@ pub fn is_valid_directory<P: AsRef<Path>>(path: P) -> bool {
 pub fn expand_glob_pattern<P: AsRef<Path>>(
     base_path: P,
     pattern: &str,
-) -> Result<Vec<PathBuf>, KaiError> {
+) -> Result<Vec<PathBuf>> {
     let base = base_path.as_ref();
     let full_pattern = base.join(pattern);
     
@@ -120,7 +120,7 @@ pub fn expand_glob_pattern<P: AsRef<Path>>(
 pub fn resolve_path_pattern<P: AsRef<Path>>(
     base_path: P,
     pattern: &str,
-) -> Result<Vec<PathBuf>, KaiError> {
+) -> Result<Vec<PathBuf>> {
     let base = base_path.as_ref();
     let target_path = base.join(pattern);
 

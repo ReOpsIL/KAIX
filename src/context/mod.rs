@@ -3,7 +3,6 @@
 use crate::utils::errors::KaiError;
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 
@@ -11,9 +10,23 @@ pub mod manager;
 pub mod global;
 pub mod plan;
 
-pub use manager::ContextManager;
-pub use global::{GlobalContext, FileContext};
-pub use plan::PlanContext;
+#[cfg(test)]
+mod test_integration;
+
+pub use manager::{
+    ContextManager, ContextStats, ContextManagerStats, ContextHealthConfig, 
+    ContextHealthReport, OverallHealth, ContextWarning, WarningSeverity,
+    MaintenanceReport, ValidationReport, ValidationError
+};
+pub use global::{
+    GlobalContext, FileContext, GlobalContextStats, ContextMemoryConfig, 
+    ContextMemoryStats, ModificationCheckResult, IncrementalUpdateResult,
+    FileModificationInfo
+};
+pub use plan::{
+    PlanContext, PlanOutput, TaskExecution, TaskDependencyData, 
+    PlanExecutionStats, PlanContextMemoryStats
+};
 
 /// Represents the context for a specific file in the project
 #[derive(Debug, Clone, Serialize, Deserialize)]

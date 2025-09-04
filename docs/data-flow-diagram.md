@@ -2,84 +2,125 @@
 
 This document illustrates how data flows through the KAI-X system during various operations.
 
-## Main Application Data Flow
+## Agentic Application Data Flow
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant CLI
+    participant UI
     participant Main
     participant Config
     participant Context
-    participant Engine
+    participant AgenticCoordinator
     participant LLM
     participant Executor
     
-    User->>CLI: Command Input
-    CLI->>Main: Parse Arguments
+    User->>UI: User Input via Terminal
+    UI->>Main: Process UI Events
     Main->>Config: Load Configuration
     Config-->>Main: Config Data
-    Main->>Context: Initialize Context
-    Context-->>Main: Context Manager
-    Main->>Engine: Create Execution Engine
-    Engine-->>Main: Engine Instance
+    Main->>Context: Initialize Enhanced Context
+    Context-->>Main: Context Manager with Health Monitoring
+    Main->>AgenticCoordinator: Create Agentic Coordinator
+    AgenticCoordinator-->>Main: Coordinator Instance
     
-    alt Interactive Mode
-        Main->>Engine: Start Interactive Loop
-        loop Chat Session
-            Engine->>User: Prompt for Input
-            User->>Engine: User Message
-            Engine->>Context: Update Context
-            Engine->>LLM: Generate Response
-            LLM-->>Engine: AI Response
-            Engine->>User: Display Response
+    Main->>AgenticCoordinator: Start Agentic Loop
+    
+    loop Agentic Execution Cycle
+        User->>UI: Submit User Prompt
+        UI->>AgenticCoordinator: User Request with Priority
+        AgenticCoordinator->>AgenticCoordinator: Handle Message Queue
+        
+        alt Planning Phase
+            AgenticCoordinator->>Context: Assemble Context
+            Context-->>AgenticCoordinator: Enhanced Context Data
+            AgenticCoordinator->>LLM: Generate Execution Plan
+            LLM-->>AgenticCoordinator: Strategic Plan
         end
-    else Single Prompt Mode
-        Main->>Engine: Execute Single Prompt
-        Engine->>LLM: Process Prompt
-        LLM-->>Engine: AI Response
-        Engine->>Executor: Execute Tasks
-        Executor-->>Engine: Task Results
-        Engine->>User: Final Output
+        
+        alt Task Execution Phase
+            loop Task Processing
+                AgenticCoordinator->>Context: Get Task Refinement Context
+                Context-->>AgenticCoordinator: Task Context
+                AgenticCoordinator->>LLM: Refine Task Instruction
+                LLM-->>AgenticCoordinator: Refined Instruction
+                AgenticCoordinator->>Executor: Execute Refined Task
+                Executor-->>AgenticCoordinator: Task Execution Result
+                AgenticCoordinator->>LLM: Analyze Execution Result
+                LLM-->>AgenticCoordinator: Analysis & Next Steps
+                AgenticCoordinator->>Context: Update Context with Results
+            end
+        end
+        
+        AgenticCoordinator->>UI: Update Status & Progress
+        UI->>User: Display Results & Status
     end
 ```
 
-## Task Execution Flow
+## Agentic Task Execution Flow
 
 ```mermaid
 flowchart TD
-    Start([User Request]) --> Parse[Parse Request]
-    Parse --> Plan[Generate Plan via LLM]
-    Plan --> Queue[Add Tasks to Queue]
-    Queue --> Dequeue[Dequeue Next Task]
+    Start([User Request with Priority]) --> MessageQueue[Add to Message Queue]
+    MessageQueue --> ProcessMessage[Process Message by Priority]
+    ProcessMessage --> StateCheck{Current Execution State?}
     
-    Dequeue --> TaskType{Task Type?}
+    StateCheck -->|Idle| Planning[Enter Planning Phase]
+    StateCheck -->|Busy| QueuePrompt[Queue User Prompt]
     
-    TaskType -->|Read File| ReadFile[Read File Content]
-    TaskType -->|Write File| WriteFile[Write File Content]
-    TaskType -->|Execute Command| ExecCmd[Execute Shell Command]
-    TaskType -->|Analyze Code| AnalyzeCode[Analyze Code via LLM]
-    TaskType -->|List Files| ListFiles[List Directory Contents]
-    TaskType -->|Create Dir| CreateDir[Create Directory]
-    TaskType -->|Delete| Delete[Delete File/Directory]
+    Planning --> ContextAssembly[Assemble Task Refinement Context]
+    ContextAssembly --> GeneratePlan[Generate Plan via LLM]
+    GeneratePlan --> ValidatePlan[Validate Plan Structure]
+    ValidatePlan --> QueueTasks[Queue Tasks with Dependencies]
     
-    ReadFile --> Result[Task Result]
-    WriteFile --> Result
-    ExecCmd --> Result
-    AnalyzeCode --> Result
-    ListFiles --> Result
-    CreateDir --> Result
-    Delete --> Result
+    QueueTasks --> DequeueTask[Dequeue Next Ready Task]
+    QueuePrompt --> DequeueTask
     
-    Result --> Analyze[LLM Post-Execution Analysis]
-    Analyze --> UpdateContext[Update Context]
-    UpdateContext --> MoreTasks{More Tasks in Queue?}
+    DequeueTask --> TaskRefinement[LLM Task Refinement Phase]
+    TaskRefinement --> GetContext[Get Current Context & History]
+    GetContext --> RefinedInstruction[Generate Refined Instruction]
     
-    MoreTasks -->|Yes| Dequeue
-    MoreTasks -->|No| Complete[Execution Complete]
+    RefinedInstruction --> TaskExecution[Execute Refined Task]
+    TaskExecution --> TaskType{Task Type?}
     
-    Complete --> Output[Present Results to User]
-    Output --> End([End])
+    TaskType -->|Read File| ReadFile[Read File with Context]
+    TaskType -->|Write File| WriteFile[Write File with Validation]
+    TaskType -->|Execute Command| ExecCmd[Execute Shell Command Safely]
+    TaskType -->|Analyze Code| AnalyzeCode[Deep Code Analysis via LLM]
+    TaskType -->|Generate Content| GenerateContent[AI Content Generation]
+    TaskType -->|List Files| ListFiles[Smart Directory Listing]
+    TaskType -->|Create Dir| CreateDir[Create Directory Structure]
+    TaskType -->|Delete| Delete[Safe Delete with Confirmation]
+    
+    ReadFile --> ExecutionResult[Task Execution Result]
+    WriteFile --> ExecutionResult
+    ExecCmd --> ExecutionResult
+    AnalyzeCode --> ExecutionResult
+    GenerateContent --> ExecutionResult
+    ListFiles --> ExecutionResult
+    CreateDir --> ExecutionResult
+    Delete --> ExecutionResult
+    
+    ExecutionResult --> ResultAnalysis[LLM Post-Execution Analysis]
+    ResultAnalysis --> AnalysisResult[Generate Task Analysis]
+    AnalysisResult --> UpdateState[Update Context & Plan State]
+    UpdateState --> CheckDependencies[Check Task Dependencies]
+    
+    CheckDependencies --> QueueNewTasks[Queue Newly Ready Tasks]
+    QueueNewTasks --> MoreTasks{More Tasks or User Prompts?}
+    
+    MoreTasks -->|Tasks Available| DequeueTask
+    MoreTasks -->|User Prompts| ProcessMessage
+    MoreTasks -->|None| PlanEvaluation[Evaluate Plan Completion]
+    
+    PlanEvaluation --> Complete{Plan Complete?}
+    Complete -->|Yes| FinalAnalysis[Final Plan Analysis]
+    Complete -->|No| AdaptivePlanning[Adaptive Planning]
+    
+    AdaptivePlanning --> ContextAssembly
+    FinalAnalysis --> PresentResults[Present Results to User]
+    PresentResults --> UpdateUI[Update UI Components]
+    UpdateUI --> End([End])
 ```
 
 ## LLM Provider Data Flow

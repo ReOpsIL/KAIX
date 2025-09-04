@@ -139,60 +139,108 @@ classDiagram
     GeminiProvider --> LlmError : handles
 ```
 
-## Context Management Architecture
+## Enhanced Context Management Architecture
 
 ```mermaid
 classDiagram
     class ContextManager {
-        +global_context: GlobalContext
-        +plan_context: Option~PlanContext~
+        +global_context: Arc~RwLock~GlobalContext~~
+        +plan_contexts: HashMap~String, Arc~RwLock~PlanContext~~~
+        +working_directory: PathBuf
+        +llm_provider: Arc~LlmProvider~
+        +model: String
+        +config: ContextConfig
+        +health_config: ContextHealthConfig
+        +last_health_check: Option~ContextHealthReport~
         +new() Self
-        +update_global_context() Result~()~
-        +create_plan_context() Result~()~
-        +get_merged_context() String
-        +save_context() Result~()~
+        +with_health_config() Self
+        +with_memory_config() Self
+        +create_plan_context() Arc~RwLock~PlanContext~~
+        +refresh_global_context() Result~()~
+        +health_check() Result~ContextHealthReport~
+        +maintenance() Result~MaintenanceReport~
+        +validate_consistency() Result~ValidationReport~
     }
     
     class GlobalContext {
         +working_directory: PathBuf
-        +project_files: HashMap~String, String~
-        +user_preferences: UserPreferences
-        +session_history: Vec~SessionEntry~
-        +new() Self
-        +add_file() Result~()~
-        +remove_file() Result~()~
-        +update_preferences() Result~()~
+        +project_files: HashMap~String, ContextEntry~
+        +context_metadata: HashMap~PathBuf, FileMetadata~
+        +project_summary: Option~String~
+        +config: ContextConfig
+        +memory_config: ContextMemoryConfig
+        +stats: GlobalContextStats
+        +file_access_info: HashMap~PathBuf, FileAccessInfo~
+        +cached_summaries: HashMap~PathBuf, CachedFileSummary~
+        +refresh() Result~()~
+        +regenerate() Result~()~
+        +update_file_context() Result~()~
+        +enforce_memory_limits() Result~()~
+        +get_file_context() Result~String~
+        +check_modifications_detailed() Result~ModificationCheckResult~
+        +update_modified_files() Result~IncrementalUpdateResult~
+        +get_memory_stats() ContextMemoryStats
     }
     
     class PlanContext {
-        +current_plan: Option~Plan~
-        +execution_history: Vec~TaskExecutionResult~
-        +active_tasks: VecDeque~Task~
-        +completed_tasks: Vec~Task~
+        +plan_id: String
+        +task_results: HashMap~String, TaskResult~
+        +variables: HashMap~String, serde_json::Value~
+        +outputs: Vec~PlanOutput~
+        +dependency_graph: HashMap~String, Vec~String~~
+        +created_at: DateTime~Utc~
+        +last_updated: DateTime~Utc~
         +new() Self
-        +update_plan() Result~()~
-        +add_execution_result() Result~()~
+        +with_dependency_graph() Self
+        +add_task_result() Result~()~
+        +set_variable() Result~()~
+        +get_variable_as() Result~Option~T~~
+        +add_output() String
+        +get_dependency_outputs() Result~HashMap~String, Value~~
+        +get_memory_stats() PlanContextMemoryStats
+        +to_json() Result~String~
+        +from_json() Result~Self~
     }
     
-    class UserPreferences {
-        +preferred_language: String
-        +coding_style: CodingStyle
-        +output_format: OutputFormat
-        +auto_save: bool
+    class ContextHealthConfig {
+        +check_interval_seconds: u64
+        +max_memory_mb: usize
+        +max_files: usize
+        +auto_cleanup: bool
+        +validate_integrity: bool
     }
     
-    class SessionEntry {
-        +timestamp: DateTime
-        +user_input: String
-        +ai_response: String
-        +execution_results: Vec~TaskExecutionResult~
+    class ContextHealthReport {
+        +overall_health: OverallHealth
+        +warnings: Vec~ContextWarning~
+        +memory_usage_mb: f64
+        +file_count: usize
+        +last_check: DateTime~Utc~
+    }
+    
+    class ContextMemoryStats {
+        +total_memory_usage: usize
+        +file_summaries_size: usize
+        +metadata_size: usize
+        +cached_content_size: usize
+        +file_count: usize
+    }
+    
+    class FileAccessInfo {
+        +last_accessed: DateTime~Utc~
+        +access_count: u64
+        +last_modified: DateTime~Utc~
+        +file_size: u64
+        +priority_score() f64
     }
     
     ContextManager --> GlobalContext : manages
     ContextManager --> PlanContext : manages
-    GlobalContext --> UserPreferences : contains
-    GlobalContext --> SessionEntry : contains
-    PlanContext --> TaskExecutionResult : tracks
+    ContextManager --> ContextHealthConfig : uses
+    ContextManager --> ContextHealthReport : generates
+    GlobalContext --> ContextMemoryStats : provides
+    GlobalContext --> FileAccessInfo : tracks
+    PlanContext --> PlanContextMemoryStats : provides
 ```
 
 ## UI Component Architecture
@@ -201,132 +249,226 @@ classDiagram
 classDiagram
     class UiManager {
         +terminal: Terminal
-        +event_handler: EventHandler
-        +components: Vec~Component~
+        +chat_component: ChatComponent
+        +plan_component: PlanComponent
+        +status_component: StatusComponent
+        +progress_component: ProgressComponent
+        +input_service: InputBufferService
+        +history_service: HistoryService
+        +completion_service: CompletionService
         +new() Self
         +initialize() Result~()~
         +run() Result~()~
         +handle_event() Result~()~
     }
     
-    class EventHandler {
-        +event_queue: VecDeque~UiEvent~
-        +new() Self
-        +register_handler() Result~()~
-        +emit_event() Result~()~
-        +process_events() Result~()~
-    }
-    
-    class Component {
-        <<interface>>
-        +render() Result~()~
-        +handle_input() Result~EventResult~
-        +update() Result~()~
-    }
-    
     class ChatComponent {
         +messages: Vec~ChatMessage~
-        +input_buffer: String
-        +scroll_position: usize
-        +render() Result~()~
+        +new() Self
         +add_message() Result~()~
-        +scroll() Result~()~
+        +render() Result~()~
+        +clear() Result~()~
+        +get_messages() Vec~ChatMessage~
+    }
+    
+    class PlanComponent {
+        +current_plan: Option~Plan~
+        +new() Self
+        +set_plan() Result~()~
+        +render() Result~()~
+        +render_plan() Result~()~
+        +render_task_list() Result~()~
     }
     
     class StatusComponent {
-        +execution_state: ExecutionState
-        +current_task: Option~String~
-        +progress: f32
-        +render() Result~()~
+        +current_status: ApplicationStatus
+        +new() Self
         +update_status() Result~()~
-    }
-    
-    class InputComponent {
-        +current_input: String
-        +history: Vec~String~
-        +cursor_position: usize
         +render() Result~()~
-        +handle_key() Result~InputResult~
+        +get_execution_state_style() Style
     }
     
-    class UiEvent {
+    class ProgressComponent {
+        +current_task: Option~String~
+        +progress: f64
+        +new() Self
+        +set_task() Result~()~
+        +set_progress() Result~()~
+        +render() Result~()~
+    }
+    
+    class InputBufferService {
+        +lines: Vec~String~
+        +cursor_line: usize
+        +cursor_col: usize
+        +new() Self
+        +insert_char() Result~()~
+        +insert_string() Result~()~
+        +handle_newline() Result~()~
+        +delete_backward() Result~()~
+        +move_cursor_left() Result~()~
+        +move_cursor_right() Result~()~
+        +get_content() String
+        +apply_completion() Result~()~
+    }
+    
+    class HistoryService {
+        +entries: VecDeque~String~
+        +current_index: Option~usize~
+        +max_entries: usize
+        +new() Self
+        +add_entry() Result~()~
+        +navigate_up() Option~String~
+        +navigate_down() Option~String~
+        +search() Vec~String~
+        +load_from_file() Result~()~
+        +save_to_file() Result~()~
+    }
+    
+    class CompletionService {
+        +suggestions: Option~Vec~String~~
+        +active_index: Option~usize~
+        +matcher: SkimMatcherV2
+        +new() Self
+        +update_suggestions() Result~()~
+        +update_slash_completions() Result~()~
+        +update_file_completions() Result~()~
+        +get_suggestions() Option~Vec~String~~
+        +next_suggestion() Result~()~
+        +previous_suggestion() Result~()~
+    }
+    
+    class ChatMessage {
+        +role: MessageRole
+        +content: String
+        +timestamp: DateTime
+    }
+    
+    class MessageRole {
         <<enumeration>>
-        KeyPress
-        Resize
-        TaskComplete
-        ErrorOccurred
+        User
+        Assistant
+        System
     }
     
-    UiManager --> EventHandler : uses
-    UiManager --> Component : manages
-    Component <|.. ChatComponent : implements
-    Component <|.. StatusComponent : implements
-    Component <|.. InputComponent : implements
-    EventHandler --> UiEvent : processes
-    ChatComponent --> UiEvent : emits
-    StatusComponent --> UiEvent : handles
-    InputComponent --> UiEvent : emits
+    class ApplicationStatus {
+        +execution_state: String
+        +current_task: Option~String~
+        +tasks_completed: usize
+        +tasks_total: usize
+    }
+    
+    UiManager --> ChatComponent : manages
+    UiManager --> PlanComponent : manages
+    UiManager --> StatusComponent : manages
+    UiManager --> ProgressComponent : manages
+    UiManager --> InputBufferService : uses
+    UiManager --> HistoryService : uses
+    UiManager --> CompletionService : uses
+    ChatComponent --> ChatMessage : contains
+    ChatMessage --> MessageRole : has
+    StatusComponent --> ApplicationStatus : displays
+    CompletionService --> InputBufferService : integrates with
+    HistoryService --> InputBufferService : provides history to
 ```
 
-## Planning System Architecture
+## Agentic Planning System Architecture
 
 ```mermaid
 classDiagram
-    class PlanningManager {
-        +llm_provider: Box~LlmProvider~
-        +context: Arc~RwLock~ContextManager~~
+    class AgenticPlanningCoordinator {
+        +task_executor: TaskExecutor
+        +context_manager: ContextManager
+        +llm_provider: Arc~LlmProvider~
+        +model: String
+        +config: CoordinatorConfig
+        +message_sender: UnboundedSender~PlanManagerMessage~
+        +status_receiver: Receiver~CoordinatorStatus~
         +new() Self
-        +create_plan() Result~Plan~
-        +refine_plan() Result~Plan~
-        +validate_plan() Result~bool~
+        +start() Result~()~
+        +submit_user_prompt() Result~String~
+        +execute_agentic_cycle() Result~()~
+        +handle_message() Result~()~
+        +start_plan() Result~()~
+        +pause_plan() Result~()~
+        +resume_plan() Result~()~
+        +cancel_plan() Result~()~
+        +execute_task_with_full_agentic_loop() Result~()~
     }
     
-    class Plan {
-        +id: String
-        +description: String
-        +tasks: Vec~Task~
-        +created_at: DateTime
-        +estimated_duration: Duration
-        +dependencies: HashMap~String, Vec~String~~
-        +new() Self
-        +add_task() Result~()~
-        +get_next_tasks() Vec~Task~
-    }
-    
-    class Task {
-        +id: String
-        +task_type: TaskType
-        +instruction: String
-        +parameters: HashMap~String, String~
-        +dependencies: Vec~String~
-        +priority: u8
-        +new() Self
-        +is_ready() bool
-    }
-    
-    class TaskType {
+    class PlanManagerMessage {
         <<enumeration>>
-        ReadFile
-        WriteFile
-        ExecuteCommand
-        AnalyzeCode
-        ListFiles
-        CreateDirectory
-        Delete
+        StartPlan(Plan)
+        PausePlan
+        ResumePlan
+        CancelPlan
+        UserRequest(UserPrompt)
+        ModifyPlan(Plan)
+        GetStatus
+        DecomposeTask(String)
+        Shutdown
     }
     
-    class PlanValidationResult {
-        +is_valid: bool
-        +errors: Vec~String~
-        +warnings: Vec~String~
-        +suggestions: Vec~String~
+    class UserPrompt {
+        +content: String
+        +priority: PromptPriority
+        +timestamp: DateTime
+        +user_id: Option~String~
+        +session_id: String
     }
     
-    PlanningManager --> Plan : creates
-    PlanningManager --> PlanValidationResult : produces
-    Plan --> Task : contains
-    Task --> TaskType : has
-    PlanningManager --> LlmProvider : uses
+    class PromptPriority {
+        <<enumeration>>
+        Normal
+        Interrupt
+        Emergency
+    }
+    
+    class CoordinatorStatus {
+        +execution_state: ExecutionState
+        +current_plan: Option~PlanStatusInfo~
+        +current_task: Option~TaskStatusInfo~
+        +metrics: PerformanceMetrics
+    }
+    
+    class ExecutionState {
+        <<enumeration>>
+        Idle
+        Planning
+        ContextAssembly
+        TaskRefinement
+        TaskExecution
+        ResultAnalysis
+        StateUpdate
+        Paused
+        Cancelled
+        Shutdown
+    }
+    
+    class PerformanceMetrics {
+        +tasks_completed: u64
+        +tasks_failed: u64
+        +average_task_duration: Duration
+        +total_execution_time: Duration
+        +memory_usage: usize
+    }
+    
+    class TaskRefinementContext {
+        +global_context: String
+        +plan_context: String
+        +execution_history: String
+        +available_tools: Vec~String~
+    }
+    
+    AgenticPlanningCoordinator --> PlanManagerMessage : processes
+    AgenticPlanningCoordinator --> UserPrompt : handles
+    AgenticPlanningCoordinator --> CoordinatorStatus : reports
+    AgenticPlanningCoordinator --> ExecutionState : manages
+    AgenticPlanningCoordinator --> PerformanceMetrics : tracks
+    AgenticPlanningCoordinator --> TaskRefinementContext : creates
+    UserPrompt --> PromptPriority : has
+    CoordinatorStatus --> ExecutionState : contains
+    CoordinatorStatus --> PerformanceMetrics : contains
 ```
 
 ## Configuration System Architecture
