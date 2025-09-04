@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub mod openrouter;
@@ -18,6 +19,9 @@ pub mod examples;
 pub use prompts::{PromptContext, PromptTemplate, PromptTemplates};
 pub use streaming::{LlmStream, StreamChunk, StreamCollector, StreamingLlmProvider};
 pub use utils::{CostBreakdown, CostEstimator, TokenCounter, UsageTracker};
+
+// Re-export agentic loop types (defined below)
+// pub use {TaskAnalysis, TaskExecutionResult, TaskRefinementContext};
 
 /// Error types for LLM operations
 #[derive(Error, Debug)]
@@ -140,6 +144,63 @@ pub struct TokenUsage {
     pub total_tokens: u32,
 }
 
+/// Raw execution result from task execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskExecutionResult {
+    /// Whether the task succeeded at the system level
+    pub success: bool,
+    /// Standard output from the task
+    pub stdout: Option<String>,
+    /// Standard error from the task
+    pub stderr: Option<String>,
+    /// Exit code for command tasks
+    pub exit_code: Option<i32>,
+    /// Raw output data
+    pub output: Option<serde_json::Value>,
+    /// Error message if task failed
+    pub error: Option<String>,
+    /// Execution time in milliseconds
+    pub execution_time_ms: u64,
+    /// Additional metadata
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Analyzed task result after LLM analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskAnalysis {
+    /// Whether the task achieved its intended outcome
+    pub success: bool,
+    /// Brief summary of what happened
+    pub summary: String,
+    /// Detailed analysis of the results
+    pub details: String,
+    /// Key information extracted from execution
+    pub extracted_data: Option<serde_json::Value>,
+    /// Suggested next steps if any
+    pub next_steps: Option<Vec<String>>,
+    /// Information to add to plan context
+    pub context_updates: Option<HashMap<String, serde_json::Value>>,
+    /// Files that were modified during execution
+    pub modified_files: Option<Vec<PathBuf>>,
+    /// Error message if analysis indicates failure
+    pub error: Option<String>,
+    /// Additional metadata from analysis
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Context for task refinement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRefinementContext {
+    /// Global project context summary
+    pub global_context: String,
+    /// Current plan context
+    pub plan_context: String,
+    /// Outputs from dependent tasks
+    pub dependency_outputs: HashMap<String, serde_json::Value>,
+    /// Plan description for context
+    pub plan_description: String,
+}
+
 /// Model information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -227,6 +288,49 @@ pub trait LlmProvider: Send + Sync {
         model: &str,
         config: Option<&GenerationConfig>,
     ) -> Result<String, LlmError>;
+
+    /// Refine a high-level task into concrete execution instructions
+    /// 
+    /// Takes a task with its context and dependency outputs, and generates
+    /// precise, executable instructions. This is used in the agentic loop
+    /// before task execution to transform abstract tasks into concrete actions.
+    /// 
+    /// # Arguments
+    /// * `task` - The task to refine
+    /// * `context` - Context including global and plan context plus dependencies
+    /// * `model` - The model to use for refinement
+    /// 
+    /// # Returns
+    /// Concrete, executable instruction as a string
+    async fn refine_task_for_execution(
+        &self,
+        task: &crate::planning::Task,
+        context: &TaskRefinementContext,
+        model: &str,
+    ) -> Result<String, LlmError>;
+
+    /// Analyze raw task execution results and extract insights
+    /// 
+    /// Takes the raw results from task execution and performs intelligent
+    /// analysis to determine success/failure, extract key information,
+    /// and provide structured feedback. This is used in the agentic loop
+    /// after task execution to update context and plan state.
+    /// 
+    /// # Arguments
+    /// * `task` - The original task that was executed
+    /// * `execution_result` - Raw results from task execution
+    /// * `expected_outcome` - What the task was supposed to achieve
+    /// * `model` - The model to use for analysis
+    /// 
+    /// # Returns
+    /// Structured analysis with success determination and extracted data
+    async fn analyze_task_result(
+        &self,
+        task: &crate::planning::Task,
+        execution_result: &TaskExecutionResult,
+        expected_outcome: &str,
+        model: &str,
+    ) -> Result<TaskAnalysis, LlmError>;
 
     /// Validate that a model is available
     async fn validate_model(&self, model: &str) -> Result<ModelInfo, LlmError>;

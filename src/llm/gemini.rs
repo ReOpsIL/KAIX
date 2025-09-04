@@ -3,12 +3,14 @@
 use super::{
     FunctionDefinition, GenerationConfig, LlmError, LlmProvider, LlmResponse, Message,
     MessageRole, ModelInfo, ModelPricing, TokenUsage, ToolCall, ToolDefinition,
+    TaskAnalysis, TaskExecutionResult, TaskRefinementContext,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Google Gemini API provider
@@ -604,5 +606,171 @@ Ensure all tasks have unique IDs and proper dependencies.
             .ok_or_else(|| LlmError::InvalidModel {
                 model: model.to_string(),
             })
+    }
+
+    async fn refine_task_for_execution(
+        &self,
+        task: &crate::planning::Task,
+        context: &TaskRefinementContext,
+        model: &str,
+    ) -> Result<String, LlmError> {
+        // Use the task refinement prompt template
+        let template = super::prompts::PromptTemplates::task_refinement();
+        let prompt_context = super::prompts::PromptContext::new()
+            .with_variable("plan_description", &context.plan_description)
+            .with_variable("task_id", &task.id)
+            .with_variable("task_type", &format!("{:?}", task.task_type))
+            .with_variable("task_description", &task.description)
+            .with_variable("task_parameters", &serde_json::to_string_pretty(&task.parameters).unwrap_or_default())
+            .with_variable("global_context", &context.global_context)
+            .with_variable("plan_context", &context.plan_context)
+            .with_variable("dependency_outputs", &serde_json::to_string_pretty(&context.dependency_outputs).unwrap_or_default());
+        
+        let (system_message, user_message) = template.fill(&prompt_context)
+            .map_err(|e| LlmError::InvalidResponse {
+                message: format!("Failed to fill task refinement template: {}", e),
+            })?;
+
+        let messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: system_message,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: MessageRole::User,
+                content: user_message,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        // Use focused configuration for refinement
+        let config = GenerationConfig {
+            temperature: Some(0.3), // Lower temperature for focused refinement
+            max_tokens: Some(4000),
+            top_p: Some(0.9),
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop_sequences: None,
+        };
+
+        let response = self.generate(&messages, model, None, Some(&config)).await?;
+        
+        response.content
+            .ok_or_else(|| LlmError::InvalidResponse {
+                message: "No content in task refinement response".to_string(),
+            })
+    }
+
+    async fn analyze_task_result(
+        &self,
+        task: &crate::planning::Task,
+        execution_result: &TaskExecutionResult,
+        expected_outcome: &str,
+        model: &str,
+    ) -> Result<TaskAnalysis, LlmError> {
+        // Use the execution analysis prompt template
+        let template = super::prompts::PromptTemplates::execution_analysis();
+        let prompt_context = super::prompts::PromptContext::new()
+            .with_variable("task_id", &task.id)
+            .with_variable("task_type", &format!("{:?}", task.task_type))
+            .with_variable("task_description", &task.description)
+            .with_variable("expected_outcome", expected_outcome)
+            .with_variable("task_parameters", &serde_json::to_string_pretty(&task.parameters).unwrap_or_default())
+            .with_variable("success", &execution_result.success.to_string())
+            .with_variable("exit_code", &execution_result.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "N/A".to_string()))
+            .with_variable("execution_time_ms", &execution_result.execution_time_ms.to_string())
+            .with_variable("stdout", execution_result.stdout.as_deref().unwrap_or(""))
+            .with_variable("stderr", execution_result.stderr.as_deref().unwrap_or(""))
+            .with_variable("output_data", &serde_json::to_string_pretty(&execution_result.output).unwrap_or_else(|_| "null".to_string()))
+            .with_variable("error_message", execution_result.error.as_deref().unwrap_or(""))
+            .with_variable("plan_description", "")
+            .with_variable("plan_context", "")
+            .with_variable("task_dependencies", &serde_json::to_string(&task.dependencies).unwrap_or_default());
+        
+        let (system_message, user_message) = template.fill(&prompt_context)
+            .map_err(|e| LlmError::InvalidResponse {
+                message: format!("Failed to fill execution analysis template: {}", e),
+            })?;
+
+        let messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: system_message,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: MessageRole::User,
+                content: user_message,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        // Use lower temperature for consistent analysis
+        let config = GenerationConfig {
+            temperature: Some(0.1),
+            max_tokens: Some(2048),
+            top_p: Some(0.8),
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop_sequences: None,
+        };
+
+        let response = self.generate(&messages, model, None, Some(&config)).await?;
+        
+        let content = response.content
+            .ok_or_else(|| LlmError::InvalidResponse {
+                message: "No content in task analysis response".to_string(),
+            })?;
+
+        // Parse the JSON response into TaskAnalysis
+        let analysis_json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| LlmError::InvalidResponse {
+                message: format!("Failed to parse task analysis JSON: {}. Content: {}", e, content),
+            })?;
+
+        // Extract fields with robust defaults
+        let success = analysis_json["success"].as_bool().unwrap_or(false);
+        let summary = analysis_json["summary"].as_str().unwrap_or("Analysis unavailable").to_string();
+        let details = analysis_json["details"].as_str().unwrap_or("").to_string();
+        let extracted_data = analysis_json.get("extracted_data").cloned();
+        let next_steps = analysis_json["next_steps"].as_array()
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>());
+        let context_updates = analysis_json["context_updates"].as_object()
+            .map(|obj| obj.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect());
+        let modified_files = analysis_json["modified_files"].as_array()
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(|s| PathBuf::from(s)))
+                .collect::<Vec<PathBuf>>());
+        let error = if !success {
+            Some(analysis_json["error"].as_str().unwrap_or("Task failed").to_string())
+        } else {
+            None
+        };
+        let metadata = analysis_json["metadata"].as_object()
+            .map(|obj| obj.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
+            .unwrap_or_default();
+
+        Ok(TaskAnalysis {
+            success,
+            summary,
+            details,
+            extracted_data,
+            next_steps,
+            context_updates,
+            modified_files,
+            error,
+            metadata,
+        })
     }
 }

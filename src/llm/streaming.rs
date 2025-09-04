@@ -1,6 +1,6 @@
-//! Streaming support for LLM responses
+//! Streaming support for LLM responses with agentic operations
 
-use super::{LlmError, TokenUsage, ToolCall};
+use super::{LlmError, TokenUsage, ToolCall, TaskRefinementContext};
 use async_trait::async_trait;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -85,6 +85,31 @@ pub trait StreamingLlmProvider {
         tools: Option<&[super::ToolDefinition]>,
         config: Option<&super::GenerationConfig>,
     ) -> Result<LlmStream, LlmError>;
+
+    /// Stream plan generation with real-time updates
+    async fn generate_plan_stream(
+        &self,
+        prompt: &str,
+        context: &str,
+        model: &str,
+    ) -> Result<LlmStream, LlmError>;
+
+    /// Stream task refinement with progressive detail
+    async fn refine_task_stream(
+        &self,
+        task: &crate::planning::Task,
+        context: &TaskRefinementContext,
+        model: &str,
+    ) -> Result<LlmStream, LlmError>;
+
+    /// Stream task result analysis with incremental insights
+    async fn analyze_task_result_stream(
+        &self,
+        task: &crate::planning::Task,
+        execution_result: &super::TaskExecutionResult,
+        expected_outcome: &str,
+        model: &str,
+    ) -> Result<LlmStream, LlmError>;
 }
 
 /// Utility for collecting streaming responses into a complete response
@@ -93,6 +118,37 @@ pub struct StreamCollector {
     tool_calls: Vec<ToolCall>,
     finish_reason: Option<String>,
     usage: Option<TokenUsage>,
+}
+
+/// Specialized collector for streaming plan generation
+pub struct PlanStreamCollector {
+    plan_buffer: String,
+    is_json_complete: bool,
+    brace_count: i32,
+    bracket_count: i32,
+}
+
+/// Specialized collector for streaming task refinement
+pub struct TaskRefinementCollector {
+    refinement_buffer: String,
+    current_section: RefinementSection,
+}
+
+/// Specialized collector for streaming task analysis
+pub struct TaskAnalysisCollector {
+    analysis_buffer: String,
+    json_buffer: String,
+    in_json_block: bool,
+    brace_count: i32,
+}
+
+/// Sections of task refinement streaming
+#[derive(Debug, Clone, PartialEq)]
+enum RefinementSection {
+    Context,
+    Analysis,
+    Instruction,
+    Complete,
 }
 
 impl StreamCollector {
@@ -165,6 +221,252 @@ impl StreamCollector {
         }
         
         Ok(collector.into_response())
+    }
+}
+
+impl PlanStreamCollector {
+    /// Create a new plan stream collector
+    pub fn new() -> Self {
+        Self {
+            plan_buffer: String::new(),
+            is_json_complete: false,
+            brace_count: 0,
+            bracket_count: 0,
+        }
+    }
+
+    /// Process a chunk and track JSON completion
+    pub fn process_chunk(&mut self, chunk: &StreamChunk) -> Result<bool, LlmError> {
+        if let Some(content) = &chunk.content {
+            self.plan_buffer.push_str(content);
+            
+            // Track JSON structure completion
+            for ch in content.chars() {
+                match ch {
+                    '{' => self.brace_count += 1,
+                    '}' => self.brace_count -= 1,
+                    '[' => self.bracket_count += 1,
+                    ']' => self.bracket_count -= 1,
+                    _ => {}
+                }
+            }
+            
+            // Check if JSON is complete
+            if self.brace_count == 0 && self.bracket_count == 0 && !self.plan_buffer.trim().is_empty() {
+                self.is_json_complete = true;
+            }
+        }
+        
+        Ok(self.is_json_complete || chunk.is_final())
+    }
+
+    /// Get the current plan buffer
+    pub fn get_current_plan(&self) -> &str {
+        &self.plan_buffer
+    }
+
+    /// Check if the plan is complete
+    pub fn is_complete(&self) -> bool {
+        self.is_json_complete
+    }
+
+    /// Parse the final plan
+    pub fn into_plan(self) -> Result<crate::planning::Plan, LlmError> {
+        let plan_json: serde_json::Value = serde_json::from_str(&self.plan_buffer)
+            .map_err(|e| LlmError::InvalidResponse {
+                message: format!("Failed to parse streamed plan JSON: {}", e),
+            })?;
+
+        crate::planning::Plan::from_json(&plan_json)
+            .map_err(|e| LlmError::InvalidResponse {
+                message: format!("Invalid streamed plan structure: {}", e),
+            })
+    }
+}
+
+impl TaskRefinementCollector {
+    /// Create a new task refinement collector
+    pub fn new() -> Self {
+        Self {
+            refinement_buffer: String::new(),
+            current_section: RefinementSection::Context,
+        }
+    }
+
+    /// Process a chunk and track refinement progress
+    pub fn process_chunk(&mut self, chunk: &StreamChunk) -> Result<RefinementSection, LlmError> {
+        if let Some(content) = &chunk.content {
+            self.refinement_buffer.push_str(content);
+            
+            // Detect section transitions based on content patterns
+            if content.contains("Analysis:") || content.contains("## Analysis") {
+                self.current_section = RefinementSection::Analysis;
+            } else if content.contains("Instruction:") || content.contains("## Instruction") ||
+                     content.contains("## Refined") {
+                self.current_section = RefinementSection::Instruction;
+            }
+            
+            if chunk.is_final() {
+                self.current_section = RefinementSection::Complete;
+            }
+        }
+        
+        Ok(self.current_section.clone())
+    }
+
+    /// Get the current refinement buffer
+    pub fn get_current_refinement(&self) -> &str {
+        &self.refinement_buffer
+    }
+
+    /// Get the current section
+    pub fn current_section(&self) -> &RefinementSection {
+        &self.current_section
+    }
+
+    /// Extract the final refined instruction
+    pub fn into_instruction(self) -> String {
+        // Extract the final instruction from the buffer
+        // This could be more sophisticated with proper parsing
+        self.refinement_buffer
+    }
+}
+
+impl TaskAnalysisCollector {
+    /// Create a new task analysis collector
+    pub fn new() -> Self {
+        Self {
+            analysis_buffer: String::new(),
+            json_buffer: String::new(),
+            in_json_block: false,
+            brace_count: 0,
+        }
+    }
+
+    /// Process a chunk and track JSON analysis completion
+    pub fn process_chunk(&mut self, chunk: &StreamChunk) -> Result<bool, LlmError> {
+        if let Some(content) = &chunk.content {
+            self.analysis_buffer.push_str(content);
+            
+            // Track JSON blocks in the response
+            for ch in content.chars() {
+                if ch == '{' {
+                    if self.brace_count == 0 {
+                        self.in_json_block = true;
+                        self.json_buffer.clear();
+                    }
+                    self.brace_count += 1;
+                }
+                
+                if self.in_json_block {
+                    self.json_buffer.push(ch);
+                }
+                
+                if ch == '}' {
+                    self.brace_count -= 1;
+                    if self.brace_count == 0 && self.in_json_block {
+                        self.in_json_block = false;
+                        // JSON block is complete
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        
+        Ok(chunk.is_final())
+    }
+
+    /// Get the current analysis buffer
+    pub fn get_current_analysis(&self) -> &str {
+        &self.analysis_buffer
+    }
+
+    /// Get the current JSON buffer
+    pub fn get_json_buffer(&self) -> &str {
+        &self.json_buffer
+    }
+
+    /// Parse the final analysis
+    pub fn into_analysis(self) -> Result<crate::llm::TaskAnalysis, LlmError> {
+        // Try to parse the JSON buffer first, fall back to analysis buffer
+        let json_content = if !self.json_buffer.trim().is_empty() {
+            &self.json_buffer
+        } else {
+            // Try to extract JSON from the analysis buffer
+            if let Some(start) = self.analysis_buffer.find('{') {
+                if let Some(end) = self.analysis_buffer.rfind('}') {
+                    &self.analysis_buffer[start..=end]
+                } else {
+                    &self.analysis_buffer
+                }
+            } else {
+                &self.analysis_buffer
+            }
+        };
+
+        let analysis_json: serde_json::Value = serde_json::from_str(json_content)
+            .map_err(|e| LlmError::InvalidResponse {
+                message: format!("Failed to parse streamed analysis JSON: {}. Content: {}", e, json_content),
+            })?;
+
+        // Parse into TaskAnalysis (similar to the provider implementations)
+        let success = analysis_json["success"].as_bool().unwrap_or(false);
+        let summary = analysis_json["summary"].as_str().unwrap_or("Analysis unavailable").to_string();
+        let details = analysis_json["details"].as_str().unwrap_or("").to_string();
+        let extracted_data = analysis_json.get("extracted_data").cloned();
+        let next_steps = analysis_json["next_steps"].as_array()
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>());
+        let context_updates = analysis_json["context_updates"].as_object()
+            .map(|obj| obj.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect());
+        let modified_files = analysis_json["modified_files"].as_array()
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(|s| std::path::PathBuf::from(s)))
+                .collect());
+        let error = if !success {
+            Some(analysis_json["error"].as_str().unwrap_or("Task failed").to_string())
+        } else {
+            None
+        };
+        let metadata = analysis_json["metadata"].as_object()
+            .map(|obj| obj.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
+            .unwrap_or_default();
+
+        Ok(crate::llm::TaskAnalysis {
+            success,
+            summary,
+            details,
+            extracted_data,
+            next_steps,
+            context_updates,
+            modified_files,
+            error,
+            metadata,
+        })
+    }
+}
+
+// Default implementations
+impl Default for PlanStreamCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for TaskRefinementCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for TaskAnalysisCollector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -312,12 +614,67 @@ pub mod utils {
         use futures::stream::select_all;
         Box::pin(select_all(streams))
     }
+
+    /// Collect a plan from a streaming response
+    pub async fn collect_plan_stream(mut stream: LlmStream) -> Result<crate::planning::Plan, LlmError> {
+        use futures::StreamExt;
+        
+        let mut collector = PlanStreamCollector::new();
+        
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result?;
+            let is_complete = collector.process_chunk(&chunk)?;
+            
+            if is_complete {
+                break;
+            }
+        }
+        
+        collector.into_plan()
+    }
+
+    /// Collect refined task instruction from a streaming response
+    pub async fn collect_task_refinement_stream(mut stream: LlmStream) -> Result<String, LlmError> {
+        use futures::StreamExt;
+        
+        let mut collector = TaskRefinementCollector::new();
+        
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result?;
+            collector.process_chunk(&chunk)?;
+            
+            if chunk.is_final() {
+                break;
+            }
+        }
+        
+        Ok(collector.into_instruction())
+    }
+
+    /// Collect task analysis from a streaming response
+    pub async fn collect_task_analysis_stream(mut stream: LlmStream) -> Result<crate::llm::TaskAnalysis, LlmError> {
+        use futures::StreamExt;
+        
+        let mut collector = TaskAnalysisCollector::new();
+        
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result?;
+            let is_complete = collector.process_chunk(&chunk)?;
+            
+            if is_complete {
+                break;
+            }
+        }
+        
+        collector.into_analysis()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::stream;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn test_stream_collector() {
@@ -340,6 +697,44 @@ mod tests {
         assert_eq!(response.content, Some("Hello world".to_string()));
         assert_eq!(response.finish_reason, "stop");
         assert!(response.usage.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_plan_stream_collector() {
+        let mut collector = PlanStreamCollector::new();
+        
+        let chunks = vec![
+            StreamChunk::content("{"),
+            StreamChunk::content("\"description\": \"Test plan\","),
+            StreamChunk::content("\"tasks\": []"),
+            StreamChunk::content("}"),
+            StreamChunk::finish("stop", None),
+        ];
+        
+        for chunk in &chunks {
+            collector.process_chunk(chunk).unwrap();
+        }
+        
+        assert!(collector.is_complete());
+        assert_eq!(collector.get_current_plan(), r#"{"description": "Test plan","tasks": []}"#);
+    }
+
+    #[tokio::test]
+    async fn test_task_analysis_collector() {
+        let mut collector = TaskAnalysisCollector::new();
+        
+        let chunks = vec![
+            StreamChunk::content("Analysis complete: {"),
+            StreamChunk::content("\"success\": true,"),
+            StreamChunk::content("\"summary\": \"Task completed successfully\"}"),
+            StreamChunk::finish("stop", None),
+        ];
+        
+        for chunk in &chunks {
+            collector.process_chunk(chunk).unwrap();
+        }
+        
+        assert_eq!(collector.get_json_buffer(), r#"{"success": true,"summary": "Task completed successfully"}"#);
     }
 
     #[tokio::test]
@@ -382,5 +777,18 @@ mod tests {
         assert!(!final_chunk.is_content());
         assert!(!final_chunk.is_tool_call());
         assert!(final_chunk.is_final());
+    }
+
+    #[test]
+    fn test_refinement_section_tracking() {
+        let mut collector = TaskRefinementCollector::new();
+        
+        assert_eq!(*collector.current_section(), RefinementSection::Context);
+        
+        collector.process_chunk(&StreamChunk::content("## Analysis\nStarting analysis...")).unwrap();
+        assert_eq!(*collector.current_section(), RefinementSection::Analysis);
+        
+        collector.process_chunk(&StreamChunk::content("## Refined Instruction\nExecute the following:")).unwrap();
+        assert_eq!(*collector.current_section(), RefinementSection::Instruction);
     }
 }
