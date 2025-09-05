@@ -3,6 +3,175 @@
 //! This module contains comprehensive examples demonstrating how to use
 //! the LLM providers, prompt templates, and utility functions.
 
+use super::*;
+use crate::planning::{Plan, Task, TaskType};
+use async_trait::async_trait;
+use serde_json;
+use std::collections::HashMap;
+
+/// Mock LLM provider for testing and examples
+pub struct MockLlmProvider {
+    responses: std::sync::Mutex<std::collections::VecDeque<String>>,
+}
+
+impl MockLlmProvider {
+    /// Create a new mock provider with default responses
+    pub fn new() -> Self {
+        let mut responses = std::collections::VecDeque::new();
+        responses.push_back("This is a mock response from the LLM.".to_string());
+        
+        Self {
+            responses: std::sync::Mutex::new(responses),
+        }
+    }
+    
+    /// Create a mock provider with custom responses
+    pub fn with_responses(responses: Vec<String>) -> Self {
+        let mut response_queue = std::collections::VecDeque::new();
+        for response in responses {
+            response_queue.push_back(response);
+        }
+        
+        Self {
+            responses: std::sync::Mutex::new(response_queue),
+        }
+    }
+    
+    /// Add a response to the queue
+    pub fn add_response(&self, response: String) {
+        self.responses.lock().unwrap().push_back(response);
+    }
+    
+    /// Get the next response (for internal use)
+    fn get_next_response(&self) -> String {
+        let mut responses = self.responses.lock().unwrap();
+        responses.pop_front().unwrap_or_else(|| {
+            "Default mock response - no more responses queued.".to_string()
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MockLlmProvider {
+    fn provider_name(&self) -> &str {
+        "mock"
+    }
+    
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
+        Ok(vec![
+            ModelInfo {
+                id: "mock-model".to_string(),
+                name: "Mock Model".to_string(),
+                description: Some("A mock model for testing".to_string()),
+                context_length: Some(4096),
+                max_output_tokens: Some(1024),
+                pricing: Some(ModelPricing {
+                    prompt: Some(0.0),
+                    completion: Some(0.0),
+                }),
+            }
+        ])
+    }
+    
+    async fn generate(
+        &self,
+        _messages: &[Message],
+        _model: &str,
+        _tools: Option<&[ToolDefinition]>,
+        _config: Option<&GenerationConfig>,
+    ) -> Result<LlmResponse, LlmError> {
+        let content = self.get_next_response();
+        
+        Ok(LlmResponse {
+            content: Some(content),
+            tool_calls: None,
+            finish_reason: "completed".to_string(),
+            usage: Some(TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+            }),
+        })
+    }
+    
+    async fn generate_plan(
+        &self,
+        _prompt: &str,
+        _context: &str,
+        _model: &str,
+    ) -> Result<crate::planning::Plan, LlmError> {
+        let mut plan = Plan::new("Mock generated plan");
+        
+        let task = Task::new("mock_task_1", "Mock task description", TaskType::ReadFile)
+            .with_parameter("path", "src/main.rs");
+        
+        plan.add_task(task);
+        
+        Ok(plan)
+    }
+    
+    async fn generate_content(
+        &self,
+        _prompt: &str,
+        _context: &str,
+        _model: &str,
+        _config: Option<&GenerationConfig>,
+    ) -> Result<String, LlmError> {
+        Ok(self.get_next_response())
+    }
+    
+    async fn validate_model(&self, model: &str) -> Result<ModelInfo, LlmError> {
+        if model == "mock-model" {
+            Ok(ModelInfo {
+                id: "mock-model".to_string(),
+                name: "Mock Model".to_string(),
+                description: Some("A mock model for testing".to_string()),
+                context_length: Some(4096),
+                max_output_tokens: Some(1024),
+                pricing: Some(ModelPricing {
+                    prompt: Some(0.0),
+                    completion: Some(0.0),
+                }),
+            })
+        } else {
+            Err(LlmError::InvalidModel {
+                model: model.to_string(),
+            })
+        }
+    }
+    
+    async fn refine_task_for_execution(
+        &self,
+        task: &crate::planning::Task,
+        _global_context: &str,
+        _plan_context: &str,
+        _dependency_outputs: &[crate::planning::TaskResult],
+        _model: &str,
+    ) -> Result<String, LlmError> {
+        Ok(format!("Mock refined instruction for task: {}", task.description))
+    }
+    
+    async fn analyze_task_result(
+        &self,
+        raw_result: &TaskExecutionResult,
+        _task_objective: &str,
+        _model: &str,
+    ) -> Result<TaskAnalysis, LlmError> {
+        Ok(TaskAnalysis {
+            success_assessment: raw_result.exit_code.unwrap_or(0) == 0,
+            extracted_information: HashMap::new(),
+            error_diagnosis: raw_result.stderr.as_ref().filter(|s| !s.is_empty()).cloned(),
+            follow_up_actions: vec![],
+        })
+    }
+}
+
+impl Default for MockLlmProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod examples {
     use super::super::*;

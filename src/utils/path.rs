@@ -15,8 +15,9 @@ pub struct WorkspaceContext {
 impl WorkspaceContext {
     /// Create a new workspace context
     pub fn new<P: AsRef<Path>>(root: P) -> Result<Self, KaiError> {
-        let root = root.as_ref().canonicalize()
-            .map_err(|e| KaiError::file_system(root, e))?;
+        let root_path = root.as_ref();
+        let root = root_path.canonicalize()
+            .map_err(|e| KaiError::file_system(root_path.to_path_buf(), e))?;
 
         if !root.is_dir() {
             return Err(KaiError::execution(format!(

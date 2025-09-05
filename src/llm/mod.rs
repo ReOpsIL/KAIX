@@ -20,6 +20,9 @@ pub use prompts::{PromptContext, PromptTemplate, PromptTemplates};
 pub use streaming::{LlmStream, StreamChunk, StreamCollector, StreamingLlmProvider};
 pub use utils::{CostBreakdown, CostEstimator, TokenCounter, UsageTracker};
 
+#[cfg(test)]
+pub use examples::MockLlmProvider;
+
 // Re-export agentic loop types (defined below)
 // pub use {TaskAnalysis, TaskExecutionResult, TaskRefinementContext};
 

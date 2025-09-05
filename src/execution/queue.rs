@@ -1,10 +1,10 @@
 //! Task queue implementation with priority management
 
-use crate::planning::{Task, TaskStatus};
+use crate::planning::Task;
 use std::collections::{HashMap, VecDeque};
 
 /// Priority levels for tasks in the queue
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QueuePriority {
     Low = 0,
     Normal = 1,
@@ -73,15 +73,21 @@ impl TaskQueue {
         ];
 
         for priority in priorities {
-            if let Some(queue) = self.priority_queues.get_mut(&priority) {
-                // Find the first task whose dependencies are satisfied
-                for i in 0..queue.len() {
-                    if let Some(task) = queue.get(i) {
-                        if self.are_dependencies_satisfied(&task.id) {
-                            let task = queue.remove(i).unwrap();
-                            self.in_progress_tasks.insert(task.id.clone());
-                            return Some(task);
-                        }
+            // First, find the index of a ready task without borrowing mutably
+            let ready_task_index = {
+                if let Some(queue) = self.priority_queues.get(&priority) {
+                    queue.iter().position(|task| self.are_dependencies_satisfied(&task.id))
+                } else {
+                    None
+                }
+            };
+            
+            // Then, if we found a ready task, remove it
+            if let Some(index) = ready_task_index {
+                if let Some(queue) = self.priority_queues.get_mut(&priority) {
+                    if let Some(task) = queue.remove(index) {
+                        self.in_progress_tasks.insert(task.id.clone());
+                        return Some(task);
                     }
                 }
             }

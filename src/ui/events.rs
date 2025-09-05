@@ -162,6 +162,7 @@ impl From<crossterm::event::KeyCode> for KeyCode {
             crossterm::event::KeyCode::Char(c) => KeyCode::Char(c),
             crossterm::event::KeyCode::Null => KeyCode::Null,
             crossterm::event::KeyCode::Esc => KeyCode::Esc,
+            _ => KeyCode::Esc, // Default case for unhandled keys
         }
     }
 }

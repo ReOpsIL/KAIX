@@ -8,7 +8,6 @@ use std::path::Path;
 use tokio::fs;
 
 /// Input buffer service managing multi-line text input
-#[derive(Debug)]
 pub struct InputBufferService {
     /// Text content as lines
     lines: Vec<String>,
@@ -16,6 +15,13 @@ pub struct InputBufferService {
     cursor: (usize, usize),
     /// Maximum history size
     max_lines: usize,
+    /// Current editing mode
+    editing_mode: EditingMode,
+    /// Text selection state
+    selection: TextSelection,
+    /// Undo/redo stack (simplified)
+    undo_stack: Vec<Vec<String>>,
+    undo_position: usize,
 }
 
 impl InputBufferService {
@@ -25,6 +31,10 @@ impl InputBufferService {
             lines: vec![String::new()],
             cursor: (0, 0),
             max_lines: 1000,
+            editing_mode: EditingMode::Normal,
+            selection: TextSelection::new(),
+            undo_stack: Vec::new(),
+            undo_position: 0,
         }
     }
 
@@ -164,6 +174,139 @@ impl InputBufferService {
         }
     }
 
+    /// Move cursor to beginning of document
+    pub fn move_cursor_to_document_start(&mut self) {
+        self.cursor = (0, 0);
+    }
+
+    /// Move cursor to end of document
+    pub fn move_cursor_to_document_end(&mut self) {
+        if !self.lines.is_empty() {
+            let last_line_idx = self.lines.len() - 1;
+            self.cursor = (last_line_idx, self.lines[last_line_idx].len());
+        }
+    }
+
+    /// Move cursor forward by word
+    pub fn move_cursor_word_forward(&mut self) {
+        if self.cursor.0 >= self.lines.len() {
+            return;
+        }
+
+        let line = &self.lines[self.cursor.0];
+        let mut pos = self.cursor.1;
+
+        // Skip current word
+        while pos < line.len() && !line.chars().nth(pos).unwrap_or(' ').is_whitespace() {
+            pos += 1;
+        }
+        // Skip whitespace
+        while pos < line.len() && line.chars().nth(pos).unwrap_or(' ').is_whitespace() {
+            pos += 1;
+        }
+
+        if pos < line.len() {
+            self.cursor.1 = pos;
+        } else if self.cursor.0 + 1 < self.lines.len() {
+            // Move to next line
+            self.cursor.0 += 1;
+            self.cursor.1 = 0;
+        }
+    }
+
+    /// Move cursor backward by word
+    pub fn move_cursor_word_backward(&mut self) {
+        if self.cursor.0 >= self.lines.len() {
+            return;
+        }
+
+        let line = &self.lines[self.cursor.0];
+        let mut pos = self.cursor.1;
+
+        if pos > 0 {
+            pos -= 1;
+            // Skip whitespace
+            while pos > 0 && line.chars().nth(pos).unwrap_or(' ').is_whitespace() {
+                pos -= 1;
+            }
+            // Skip current word
+            while pos > 0 && !line.chars().nth(pos - 1).unwrap_or(' ').is_whitespace() {
+                pos -= 1;
+            }
+            self.cursor.1 = pos;
+        } else if self.cursor.0 > 0 {
+            // Move to end of previous line
+            self.cursor.0 -= 1;
+            self.cursor.1 = self.lines[self.cursor.0].len();
+        }
+    }
+
+    /// Delete word forward
+    pub fn delete_word_forward(&mut self) {
+        if self.cursor.0 >= self.lines.len() {
+            return;
+        }
+
+        let line = &mut self.lines[self.cursor.0];
+        let mut end_pos = self.cursor.1;
+
+        // Find end of current word
+        while end_pos < line.len() && !line.chars().nth(end_pos).unwrap_or(' ').is_whitespace() {
+            end_pos += 1;
+        }
+        // Include trailing whitespace
+        while end_pos < line.len() && line.chars().nth(end_pos).unwrap_or(' ').is_whitespace() {
+            end_pos += 1;
+        }
+
+        if end_pos > self.cursor.1 {
+            line.drain(self.cursor.1..end_pos);
+        }
+    }
+
+    /// Delete word backward
+    pub fn delete_word_backward(&mut self) {
+        if self.cursor.0 >= self.lines.len() {
+            return;
+        }
+
+        let line = &mut self.lines[self.cursor.0];
+        let mut start_pos = self.cursor.1;
+
+        if start_pos > 0 {
+            // Skip trailing whitespace
+            while start_pos > 0 && line.chars().nth(start_pos - 1).unwrap_or(' ').is_whitespace() {
+                start_pos -= 1;
+            }
+            // Delete word characters
+            while start_pos > 0 && !line.chars().nth(start_pos - 1).unwrap_or(' ').is_whitespace() {
+                start_pos -= 1;
+            }
+            
+            if start_pos < self.cursor.1 {
+                line.drain(start_pos..self.cursor.1);
+                self.cursor.1 = start_pos;
+            }
+        }
+    }
+
+    /// Delete from cursor to end of line
+    pub fn delete_to_line_end(&mut self) {
+        if self.cursor.0 < self.lines.len() {
+            let line = &mut self.lines[self.cursor.0];
+            line.truncate(self.cursor.1);
+        }
+    }
+
+    /// Delete from cursor to beginning of line
+    pub fn delete_to_line_start(&mut self) {
+        if self.cursor.0 < self.lines.len() {
+            let line = &mut self.lines[self.cursor.0];
+            line.drain(0..self.cursor.1);
+            self.cursor.1 = 0;
+        }
+    }
+
     /// Get the current content as a single string
     pub fn get_content(&self) -> String {
         self.lines.join("\n")
@@ -240,6 +383,126 @@ impl InputBufferService {
         }
 
         line[word_start..word_end].to_string()
+    }
+
+    /// Get selected text (for copy/paste functionality)
+    pub fn get_selected_text(&self, start: (usize, usize), end: (usize, usize)) -> String {
+        if start.0 == end.0 {
+            // Single line selection
+            if start.0 < self.lines.len() {
+                let line = &self.lines[start.0];
+                let start_pos = start.1.min(line.len());
+                let end_pos = end.1.min(line.len());
+                if start_pos < end_pos {
+                    return line[start_pos..end_pos].to_string();
+                }
+            }
+        } else {
+            // Multi-line selection
+            let mut result = String::new();
+            for line_idx in start.0..=end.0.min(self.lines.len().saturating_sub(1)) {
+                let line = &self.lines[line_idx];
+                if line_idx == start.0 {
+                    // First line
+                    let start_pos = start.1.min(line.len());
+                    result.push_str(&line[start_pos..]);
+                } else if line_idx == end.0 {
+                    // Last line
+                    let end_pos = end.1.min(line.len());
+                    result.push('\n');
+                    result.push_str(&line[..end_pos]);
+                } else {
+                    // Middle lines
+                    result.push('\n');
+                    result.push_str(line);
+                }
+            }
+            return result;
+        }
+        String::new()
+    }
+
+    /// Set editing mode
+    pub fn set_editing_mode(&mut self, mode: EditingMode) {
+        self.editing_mode = mode;
+    }
+
+    /// Get current editing mode
+    pub fn get_editing_mode(&self) -> &EditingMode {
+        &self.editing_mode
+    }
+
+    /// Save current state for undo
+    pub fn save_state(&mut self) {
+        if self.undo_position < self.undo_stack.len() {
+            self.undo_stack.truncate(self.undo_position);
+        }
+        self.undo_stack.push(self.lines.clone());
+        self.undo_position = self.undo_stack.len();
+        
+        // Limit undo stack size
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.remove(0);
+            self.undo_position = self.undo_stack.len();
+        }
+    }
+
+    /// Undo last change
+    pub fn undo(&mut self) -> bool {
+        if self.undo_position > 0 {
+            self.undo_position -= 1;
+            if let Some(state) = self.undo_stack.get(self.undo_position) {
+                self.lines = state.clone();
+                // Keep cursor in bounds
+                if self.cursor.0 >= self.lines.len() {
+                    self.cursor.0 = self.lines.len().saturating_sub(1);
+                }
+                if self.cursor.0 < self.lines.len() && self.cursor.1 > self.lines[self.cursor.0].len() {
+                    self.cursor.1 = self.lines[self.cursor.0].len();
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Redo last undone change
+    pub fn redo(&mut self) -> bool {
+        if self.undo_position < self.undo_stack.len() {
+            if let Some(state) = self.undo_stack.get(self.undo_position) {
+                self.lines = state.clone();
+                self.undo_position += 1;
+                // Keep cursor in bounds
+                if self.cursor.0 >= self.lines.len() {
+                    self.cursor.0 = self.lines.len().saturating_sub(1);
+                }
+                if self.cursor.0 < self.lines.len() && self.cursor.1 > self.lines[self.cursor.0].len() {
+                    self.cursor.1 = self.lines[self.cursor.0].len();
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get text selection
+    pub fn get_selection(&self) -> &TextSelection {
+        &self.selection
+    }
+
+    /// Start text selection
+    pub fn start_selection(&mut self) {
+        self.selection.start_selection(self.cursor);
+    }
+
+    /// Update text selection
+    pub fn update_selection(&mut self) {
+        self.selection.update_selection(self.cursor);
+    }
+
+    /// Clear text selection
+    pub fn clear_selection(&mut self) {
+        self.selection.clear_selection();
     }
 }
 
@@ -412,7 +675,6 @@ impl Default for HistoryService {
 }
 
 /// Completion service for slash commands and file paths
-#[derive(Debug)]
 pub struct CompletionService {
     /// Current suggestions
     suggestions: Vec<String>,
@@ -564,9 +826,39 @@ impl CompletionService {
     }
 
     /// Update history completions
-    async fn update_history_completions(&mut self, _query: &str) -> Result<()> {
-        // This would integrate with the history service
-        // For now, just return empty
+    async fn update_history_completions(&mut self, query: &str) -> Result<()> {
+        if query.len() < 2 {
+            return Ok(());
+        }
+
+        let search_query = &query[1..]; // Remove the '#' prefix
+        
+        // This is a placeholder - in a real implementation, this would integrate
+        // with the HistoryService to search through command history
+        let sample_history = vec![
+            "#implement user authentication",
+            "#refactor database queries",
+            "#add unit tests for utils module",
+            "#update documentation",
+            "#fix memory leak in parser",
+        ];
+        
+        if search_query.is_empty() {
+            self.suggestions = sample_history.iter().map(|s| s.to_string()).collect();
+        } else {
+            let mut matches: Vec<(i64, String)> = sample_history
+                .iter()
+                .filter_map(|entry| {
+                    let entry_without_hash = &entry[1..]; // Remove the '#' prefix
+                    self.matcher.fuzzy_match(entry_without_hash, search_query)
+                        .map(|score| (score, entry.to_string()))
+                })
+                .collect();
+
+            matches.sort_by(|a, b| b.0.cmp(&a.0));
+            self.suggestions = matches.into_iter().map(|(_, entry)| entry).take(10).collect();
+        }
+
         Ok(())
     }
 
@@ -618,9 +910,73 @@ impl CompletionService {
         self.suggestions.clear();
         self.active_index = None;
     }
+
+    /// Set current working directory for file completions
+    pub fn set_working_directory(&mut self, _workdir: std::path::PathBuf) {
+        // Store the working directory for file completions
+        // This would be used to scope file searches to the project directory
+    }
+
+    /// Integrate with history service for # completions
+    pub fn integrate_with_history(&mut self, _history: &HistoryService) {
+        // This would allow the completion service to access command history
+        // for '#' triggered completions
+    }
 }
 
+
 impl Default for CompletionService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Advanced editing mode for the input buffer
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditingMode {
+    /// Normal text editing mode
+    Normal,
+    /// Vim-like command mode
+    Command,
+    /// Insert mode (like vim insert mode)
+    Insert,
+}
+
+/// Text selection state for copy/paste operations
+#[derive(Debug, Clone)]
+pub struct TextSelection {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+    pub active: bool,
+}
+
+impl TextSelection {
+    pub fn new() -> Self {
+        Self {
+            start: (0, 0),
+            end: (0, 0),
+            active: false,
+        }
+    }
+    
+    pub fn start_selection(&mut self, pos: (usize, usize)) {
+        self.start = pos;
+        self.end = pos;
+        self.active = true;
+    }
+    
+    pub fn update_selection(&mut self, pos: (usize, usize)) {
+        if self.active {
+            self.end = pos;
+        }
+    }
+    
+    pub fn clear_selection(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Default for TextSelection {
     fn default() -> Self {
         Self::new()
     }

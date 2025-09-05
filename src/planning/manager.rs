@@ -159,7 +159,7 @@ pub struct AgenticPlanningCoordinator {
     main_task_queue: Arc<RwLock<VecDeque<Task>>>,
     
     /// Task executor for primitive operations
-    task_executor: Arc<TaskExecutor>,
+    task_executor: Arc<RwLock<TaskExecutor>>,
     /// Context manager for global and plan context
     context_manager: Arc<RwLock<ContextManager>>,
     /// LLM provider for plan generation, task refinement, and analysis
@@ -238,7 +238,7 @@ impl AgenticPlanningCoordinator {
             current_plan_context: Arc::new(RwLock::new(None)),
             user_prompt_queue: Arc::new(RwLock::new(VecDeque::new())),
             main_task_queue: Arc::new(RwLock::new(VecDeque::new())),
-            task_executor: Arc::new(task_executor),
+            task_executor: Arc::new(RwLock::new(task_executor)),
             context_manager: Arc::new(RwLock::new(context_manager)),
             llm_provider,
             message_receiver: msg_receiver,
@@ -316,8 +316,11 @@ impl AgenticPlanningCoordinator {
             }
 
             // Main agentic loop with dual priority queue processing
+            let mut cycle_tick = tokio::time::interval(tokio::time::Duration::from_millis(100));
             tokio::select! {
-                // Handle control messages
+                biased;
+                
+                // Handle control messages (higher priority)
                 message = self.message_receiver.recv() => {
                     if let Some(msg) = message {
                         if let Err(e) = self.handle_message(msg).await {
@@ -328,9 +331,11 @@ impl AgenticPlanningCoordinator {
                     }
                 }
 
-                // Main agentic loop execution
-                _ = self.execute_agentic_cycle() => {
-                    // Agentic cycle completed - continue loop
+                // Main agentic loop execution (lower priority)
+                _ = cycle_tick.tick() => {
+                    if let Err(e) = self.execute_agentic_cycle().await {
+                        tracing::error!("Error in agentic cycle: {}", e);
+                    }
                 }
             }
 
@@ -349,7 +354,7 @@ impl AgenticPlanningCoordinator {
     }
     
     /// Execute the main agentic cycle - the heart of the coordinator
-    async fn execute_agentic_cycle(&self) -> Result<()> {
+    async fn execute_agentic_cycle(&mut self) -> Result<()> {
         // Step 1: Check User Prompt Queue (High Priority LIFO)
         if let Some(user_prompt) = self.dequeue_user_prompt().await {
             return self.handle_user_prompt(user_prompt).await;
@@ -663,7 +668,7 @@ impl AgenticPlanningCoordinator {
         
         // Update plan context with results
         if let Some(plan_context) = &mut *self.current_plan_context.write().await {
-            plan_context.add_task_result(task.id.clone(), task_result);
+            plan_context.add_task_result(task.id.clone(), task.description.clone(), task_result);
             
             if let Some(extracted_data) = analyzed_result.extracted_data {
                 plan_context.add_output(
@@ -722,8 +727,9 @@ impl AgenticPlanningCoordinator {
         
         // Use task executor with timeout
         let execution_future = async {
-            // For now, use the old interface - TODO: update TaskExecutor to use concrete instructions
-            self.task_executor.execute_task(task, &plan_context).await
+            // Convert PlanContext to string for context parameter
+            let context_str = plan_context.get_summary();
+            self.task_executor.write().await.execute_task(task, concrete_instruction, &context_str).await
         };
         
         let result = tokio::time::timeout(
@@ -733,17 +739,23 @@ impl AgenticPlanningCoordinator {
         
         match result {
             Ok(task_result) => {
-                // Convert TaskResult to TaskExecutionResult
-                Ok(TaskExecutionResult {
-                    success: task_result.success,
-                    stdout: None, // TaskResult doesn't separate stdout/stderr
-                    stderr: None,
-                    exit_code: None,
-                    output: task_result.output,
-                    error: task_result.error,
-                    execution_time_ms: task_result.execution_time_ms,
-                    metadata: task_result.metadata,
-                })
+                // task_result is Result<TaskExecutionResult>, so we need to handle it
+                match task_result {
+                    Ok(execution_result) => Ok(execution_result),
+                    Err(e) => {
+                        tracing::error!("Task execution failed: {}", e);
+                        Ok(TaskExecutionResult {
+                            success: false,
+                            stdout: None,
+                            stderr: Some(format!("Execution failed: {}", e)),
+                            exit_code: Some(-1),
+                            output: None,
+                            error: Some(e.to_string()),
+                            execution_time_ms: 0,
+                            metadata: HashMap::new(),
+                        })
+                    }
+                }
             }
             Err(_) => {
                 tracing::error!("Task execution timed out after {}ms", self.config.task_timeout_ms);

@@ -4,7 +4,7 @@ use crate::planning::{Plan, Task, TaskStatus};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Span, Text},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
     Frame,
 };
@@ -60,7 +60,7 @@ impl ChatComponent {
                 };
 
                 let content = format!("{}{}", role_prefix, msg.content);
-                ListItem::new(Spans::from(vec![Span::styled(content, style)]))
+                ListItem::new(Line::from(vec![Span::styled(content, style)]))
             })
             .collect();
 
@@ -121,11 +121,11 @@ impl PlanComponent {
 
         // Plan info
         let plan_info = Paragraph::new(vec![
-            Spans::from(vec![
+            Line::from(vec![
                 Span::styled("Plan: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(&plan.description),
             ]),
-            Spans::from(vec![
+            Line::from(vec![
                 Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
                     format!("{:?}", plan.status),
@@ -166,7 +166,7 @@ impl PlanComponent {
                 };
 
                 let content = format!("{} {}. {}", status_symbol, i + 1, task.description);
-                ListItem::new(Spans::from(vec![Span::styled(content, style)]))
+                ListItem::new(Line::from(vec![Span::styled(content, style)]))
             })
             .collect();
 

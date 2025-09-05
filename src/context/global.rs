@@ -291,13 +291,13 @@ impl GlobalContext {
         // Check cache first
         if let Some(cached) = self.summary_cache.get(relative_path) {
             if cached.metadata.modified_at == metadata.modified_at {
-                // Update access info
-                self.update_access_info(relative_path.to_path_buf());
+                // Clone the summary to avoid borrowing issues
+                let summary = cached.summary.clone();
                 
-                        // Use cached summary
+                // Use cached summary
                 let context_entry = ContextEntry::new(
                     relative_path.to_path_buf(), 
-                    cached.summary.clone(), 
+                    summary, 
                     metadata
                 );
                 self.file_contexts.insert(relative_path.to_path_buf(), context_entry);
@@ -1451,7 +1451,7 @@ impl GlobalContext {
             return vec![content.to_string()];
         }
         
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
         let lines: Vec<&str> = content.lines().collect();
         
         match language.to_lowercase().as_str() {

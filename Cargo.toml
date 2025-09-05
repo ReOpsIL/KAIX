@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7"
 futures = "0.3"
 
 # CLI and TUI
@@ -31,7 +32,7 @@ serde_yaml = "0.9"
 
 # HTTP clients for LLM providers
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
 
 # File system and path handling
 glob = "0.3"
@@ -56,6 +57,12 @@ thiserror = "1.0"
 indexmap = "2.0"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+semver = "1.0"
+url = "2.0"
+
+# Platform-specific dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.9"
 
 [dev-dependencies]
 tokio-test = "0.4"

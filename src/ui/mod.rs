@@ -3,10 +3,16 @@
 pub mod services;
 pub mod components;
 pub mod events;
+pub mod slash_commands;
+pub mod file_browser;
+pub mod clipboard;
 
-pub use services::{InputBufferService, HistoryService, CompletionService};
-pub use components::{ChatComponent, PlanComponent, StatusComponent};
-pub use events::{UiEvent, KeyEvent, InputEvent};
+pub use services::{InputBufferService, HistoryService, CompletionService, EditingMode, TextSelection};
+pub use components::{ChatComponent, PlanComponent, StatusComponent, ApplicationStatus};
+pub use events::{UiEvent, KeyEvent, InputEvent, SlashCommand};
+pub use slash_commands::SlashCommandProcessor;
+pub use file_browser::{FileBrowserComponent, FileEntry};
+pub use clipboard::{ClipboardManager, copy_to_clipboard, paste_from_clipboard, clipboard_has_content};
 
 use crate::utils::errors::KaiError;
 use crate::Result;
@@ -30,23 +36,45 @@ pub struct UiManager {
     history: HistoryService,
     /// Completion service
     completion: CompletionService,
+    /// File browser component
+    file_browser: FileBrowserComponent,
+    /// Slash command processor
+    slash_processor: SlashCommandProcessor,
+    /// Chat component for conversation history
+    chat_component: ChatComponent,
+    /// Plan component for plan visualization
+    plan_component: PlanComponent,
+    /// Status component for application status
+    status_component: StatusComponent,
     /// Event channel sender
     event_sender: mpsc::UnboundedSender<UiEvent>,
     /// Event channel receiver
     event_receiver: mpsc::UnboundedReceiver<UiEvent>,
+    /// Current working directory
+    working_directory: std::path::PathBuf,
+    /// Clipboard manager for copy/paste operations
+    clipboard: ClipboardManager,
 }
 
 impl UiManager {
     /// Create a new UI manager
     pub fn new() -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
+        let working_directory = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
         Self {
             input_buffer: InputBufferService::new(),
             history: HistoryService::new(),
             completion: CompletionService::new(),
+            file_browser: FileBrowserComponent::new(working_directory.clone()),
+            slash_processor: SlashCommandProcessor::new(event_sender.clone()),
+            chat_component: ChatComponent::new(),
+            plan_component: PlanComponent::new(),
+            status_component: StatusComponent::new(),
             event_sender,
             event_receiver,
+            working_directory,
+            clipboard: ClipboardManager::new(),
         }
     }
 
@@ -111,9 +139,40 @@ impl UiManager {
 
     /// Handle a key event
     async fn handle_key_event(&mut self, key: crossterm::event::KeyEvent) -> Result<Option<UiEvent>> {
+        // Handle file browser input first
+        if self.file_browser.is_visible() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.file_browser.hide();
+                    return Ok(None);
+                }
+                KeyCode::Up => {
+                    self.file_browser.select_previous();
+                    return Ok(None);
+                }
+                KeyCode::Down => {
+                    self.file_browser.select_next();
+                    return Ok(None);
+                }
+                KeyCode::Enter => {
+                    if let Some(selected_file) = self.file_browser.get_selected_file() {
+                        let file_path = format!("@{}", selected_file.to_string_lossy());
+                        self.input_buffer.apply_completion(&file_path);
+                        self.file_browser.hide();
+                    }
+                    return Ok(None);
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Esc => {
-                // Exit application
+                // Hide file browser if visible, otherwise exit
+                if self.file_browser.is_visible() {
+                    self.file_browser.hide();
+                    return Ok(None);
+                }
                 return Ok(Some(UiEvent::Quit));
             }
             KeyCode::Enter => {
@@ -121,8 +180,17 @@ impl UiManager {
                 let input = self.input_buffer.get_content();
                 if !input.trim().is_empty() {
                     self.history.add_entry(input.clone()).await?;
-                    self.input_buffer.clear();
-                    return Ok(Some(UiEvent::SubmitPrompt(input)));
+                    
+                    // Check if it's a slash command
+                    if input.trim().starts_with('/') {
+                        let command = SlashCommand::parse(&input.trim());
+                        self.slash_processor.process_command(command).await?;
+                        self.input_buffer.clear();
+                        return Ok(None);
+                    } else {
+                        self.input_buffer.clear();
+                        return Ok(Some(UiEvent::SubmitPrompt(input)));
+                    }
                 }
             }
             KeyCode::Tab => {
@@ -147,22 +215,153 @@ impl UiManager {
                 // Handle character input
                 self.input_buffer.insert_char(c);
                 
-                // Update completions
-                let cursor_pos = self.input_buffer.cursor_position();
                 let content = self.input_buffer.get_content();
+                let cursor_pos = self.input_buffer.cursor_position();
+                
+                // Check for special character triggers
+                if content.contains('@') {
+                    // Trigger file browser
+                    let lines: Vec<&str> = content.lines().collect();
+                    if cursor_pos.0 < lines.len() {
+                        let current_line = lines[cursor_pos.0];
+                        if let Some(at_pos) = current_line.rfind('@') {
+                            let query = &current_line[at_pos..];
+                            self.file_browser.trigger_browser(query).await?;
+                        }
+                    }
+                }
+                
+                // Update completions
                 self.completion.update_suggestions(&content, cursor_pos).await?;
             }
             KeyCode::Backspace => {
-                self.input_buffer.delete_backward();
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.delete_word_backward();
+                } else {
+                    self.input_buffer.delete_backward();
+                }
             }
             KeyCode::Delete => {
-                self.input_buffer.delete_forward();
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.delete_word_forward();
+                } else {
+                    self.input_buffer.delete_forward();
+                }
             }
             KeyCode::Left => {
-                self.input_buffer.move_cursor_left();
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_word_backward();
+                } else {
+                    self.input_buffer.move_cursor_left();
+                }
             }
             KeyCode::Right => {
-                self.input_buffer.move_cursor_right();
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_word_forward();
+                } else {
+                    self.input_buffer.move_cursor_right();
+                }
+            }
+            KeyCode::Home => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_to_document_start();
+                } else {
+                    self.input_buffer.move_cursor_to_line_start();
+                }
+            }
+            KeyCode::End => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_to_document_end();
+                } else {
+                    self.input_buffer.move_cursor_to_line_end();
+                }
+            }
+            // Additional Vim-like keybindings with Ctrl modifier
+            KeyCode::Char('a') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.move_cursor_to_line_start();
+            }
+            KeyCode::Char('e') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.move_cursor_to_line_end();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.delete_to_line_start();
+            }
+            KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.delete_to_line_end();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.delete_word_backward();
+            }
+            KeyCode::Char('z') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.undo();
+            }
+            KeyCode::Char('y') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.input_buffer.redo();
+            }
+            KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                // Copy selected text or current line
+                if self.input_buffer.get_selection().active {
+                    let selection = self.input_buffer.get_selection();
+                    let selected_text = self.input_buffer.get_selected_text(selection.start, selection.end);
+                    if let Err(e) = copy_to_clipboard(&selected_text).await {
+                        tracing::warn!("Failed to copy to clipboard: {}", e);
+                    }
+                } else {
+                    // Copy current line if no selection
+                    let content = self.input_buffer.get_content();
+                    let cursor_pos = self.input_buffer.cursor_position();
+                    let lines: Vec<&str> = content.lines().collect();
+                    if cursor_pos.0 < lines.len() {
+                        let current_line = lines[cursor_pos.0];
+                        if let Err(e) = copy_to_clipboard(current_line).await {
+                            tracing::warn!("Failed to copy to clipboard: {}", e);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('v') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                // Paste from clipboard
+                match paste_from_clipboard().await {
+                    Ok(text) => {
+                        self.input_buffer.insert_string(&text);
+                        
+                        // Update completions after paste
+                        let content = self.input_buffer.get_content();
+                        let cursor_pos = self.input_buffer.cursor_position();
+                        if let Err(e) = self.completion.update_suggestions(&content, cursor_pos).await {
+                            tracing::warn!("Failed to update completions after paste: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to paste from clipboard: {}", e);
+                    }
+                }
+            }
+            KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                // Cut selected text or current line
+                if self.input_buffer.get_selection().active {
+                    let selection = self.input_buffer.get_selection();
+                    let selected_text = self.input_buffer.get_selected_text(selection.start, selection.end);
+                    if let Err(e) = copy_to_clipboard(&selected_text).await {
+                        tracing::warn!("Failed to copy to clipboard: {}", e);
+                    }
+                    // TODO: Delete the selected text
+                } else {
+                    // Cut current line if no selection
+                    let content = self.input_buffer.get_content();
+                    let cursor_pos = self.input_buffer.cursor_position();
+                    let lines: Vec<&str> = content.lines().collect();
+                    if cursor_pos.0 < lines.len() {
+                        let current_line = lines[cursor_pos.0];
+                        if let Err(e) = copy_to_clipboard(current_line).await {
+                            tracing::warn!("Failed to copy to clipboard: {}", e);
+                        }
+                        // Delete the current line
+                        self.input_buffer.delete_to_line_start();
+                        self.input_buffer.delete_to_line_end();
+                        self.input_buffer.delete_forward(); // Delete the newline if any
+                    }
+                }
             }
             _ => {}
         }
@@ -173,15 +372,119 @@ impl UiManager {
     /// Handle a UI event from the application
     async fn handle_ui_event(&mut self, event: UiEvent) -> Result<()> {
         match event {
-            UiEvent::PlanUpdated(_) => {
-                // Handle plan updates
+            UiEvent::PlanUpdated(plan) => {
+                // Update plan visualization in real-time
+                self.plan_component.set_plan(Some(plan));
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    "Plan updated and ready for execution".to_string(),
+                );
             }
-            UiEvent::TaskCompleted(_) => {
-                // Handle task completion
+            UiEvent::TaskStarted(task_started) => {
+                // Show task start notification
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("🏃 Started: {}", task_started.task_description),
+                );
+            }
+            UiEvent::TaskCompleted(task_completed) => {
+                // Show task completion with status
+                let status_icon = if task_completed.result.success { "✅" } else { "❌" };
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("{} Completed: {}", status_icon, task_completed.task_description),
+                );
+            }
+            UiEvent::TaskFailed(task_failed) => {
+                // Show task failure
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("❌ Failed: {} - {}", task_failed.task_description, task_failed.error),
+                );
+            }
+            UiEvent::ExecutionStateChanged(state) => {
+                // Update status component with new execution state
+                let mut status = ApplicationStatus::default();
+                status.execution_state = state.clone();
+                self.status_component.update_status(status);
+                
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("Execution state: {}", state),
+                );
+            }
+            UiEvent::ProviderChanged(provider, model) => {
+                // Update status with new provider/model
+                let mut status = ApplicationStatus::default();
+                status.active_provider = provider.clone();
+                status.active_model = model.clone();
+                self.status_component.update_status(status);
+                
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("Switched to {} / {}", provider, model),
+                );
+            }
+            UiEvent::WorkingDirectoryChanged(workdir) => {
+                // Update working directory across components
+                self.working_directory = std::path::PathBuf::from(&workdir);
+                self.file_browser.set_working_directory(self.working_directory.clone()).await?;
+                
+                let mut status = ApplicationStatus::default();
+                status.working_directory = workdir.clone();
+                self.status_component.update_status(status);
+                
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("Working directory: {}", workdir),
+                );
+            }
+            UiEvent::ContextRefreshed => {
+                // Notify about context refresh
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    "Context refreshed successfully".to_string(),
+                );
+            }
+            UiEvent::StatusUpdate(status_update) => {
+                // Update application status
+                let mut status = ApplicationStatus::default();
+                
+                if let Some(exec_state) = status_update.execution_state {
+                    status.execution_state = exec_state;
+                }
+                if let Some(provider) = status_update.active_provider {
+                    status.active_provider = provider;
+                }
+                if let Some(model) = status_update.active_model {
+                    status.active_model = model;
+                }
+                if let Some(workdir) = status_update.working_directory {
+                    status.working_directory = workdir;
+                }
+                if let Some(files) = status_update.context_files {
+                    status.context_files = files;
+                }
+                if let Some(memory) = status_update.memory_usage {
+                    status.memory_usage = Some(memory);
+                }
+                
+                self.status_component.update_status(status);
             }
             UiEvent::Error(error) => {
                 // Handle error display
                 tracing::error!("UI Error: {}", error);
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::System,
+                    format!("❌ Error: {}", error),
+                );
+            }
+            UiEvent::SubmitPrompt(prompt) => {
+                // Add user prompt to chat history
+                self.chat_component.add_message(
+                    crate::ui::components::MessageRole::User,
+                    prompt,
+                );
             }
             _ => {}
         }
@@ -191,26 +494,42 @@ impl UiManager {
 
     /// Render the UI
     fn render(&self, f: &mut ratatui::Frame) {
-        let chunks = ratatui::layout::Layout::default()
+        // Main layout: split between chat/plan area and bottom panels
+        let main_chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .margin(1)
             .constraints([
-                ratatui::layout::Constraint::Min(1),      // Chat area
+                ratatui::layout::Constraint::Min(1),      // Main content area
                 ratatui::layout::Constraint::Length(3),   // Input area
                 ratatui::layout::Constraint::Length(1),   // Status area
             ])
-            .split(f.size());
+            .split(f.area());
+
+        // Split main content area between chat and plan
+        let content_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Percentage(60), // Chat area
+                ratatui::layout::Constraint::Percentage(40), // Plan area
+            ])
+            .split(main_chunks[0]);
 
         // Render chat component
-        let chat_component = ChatComponent::new();
-        chat_component.render(f, chunks[0]);
+        self.chat_component.render(f, content_chunks[0]);
 
-        // Render input component
-        self.render_input_area(f, chunks[1]);
+        // Render plan component
+        self.plan_component.render(f, content_chunks[1]);
+
+        // Render input area
+        self.render_input_area(f, main_chunks[1]);
 
         // Render status component
-        let status_component = StatusComponent::new();
-        status_component.render(f, chunks[2]);
+        self.status_component.render(f, main_chunks[2]);
+
+        // Render file browser overlay if visible
+        if self.file_browser.is_visible() {
+            self.file_browser.render(f, f.area());
+        }
     }
 
     /// Render the input area
@@ -228,10 +547,10 @@ impl UiManager {
 
         // Render cursor
         if cursor_pos.1 < area.width as usize - 2 {
-            f.set_cursor(
+            f.set_cursor_position((
                 area.x + cursor_pos.1 as u16 + 1,
                 area.y + cursor_pos.0 as u16 + 1,
-            );
+            ));
         }
 
         // Render completions if available
@@ -298,6 +617,53 @@ impl UiManager {
     /// Get the event sender for external components
     pub fn event_sender(&self) -> mpsc::UnboundedSender<UiEvent> {
         self.event_sender.clone()
+    }
+
+    /// Add a message to the chat component
+    pub fn add_chat_message(&mut self, role: crate::ui::components::MessageRole, content: String) {
+        self.chat_component.add_message(role, content);
+    }
+
+    /// Update the current plan
+    pub fn update_plan(&mut self, plan: crate::planning::Plan) {
+        self.plan_component.set_plan(Some(plan));
+    }
+
+    /// Clear the current plan
+    pub fn clear_plan(&mut self) {
+        self.plan_component.set_plan(None);
+    }
+
+    /// Update application status
+    pub fn update_status(&mut self, status: ApplicationStatus) {
+        self.status_component.update_status(status);
+    }
+
+    /// Get current working directory
+    pub fn get_working_directory(&self) -> &std::path::PathBuf {
+        &self.working_directory
+    }
+
+    /// Set working directory and update all components
+    pub async fn set_working_directory(&mut self, workdir: std::path::PathBuf) -> Result<()> {
+        self.working_directory = workdir.clone();
+        self.file_browser.set_working_directory(workdir).await?;
+        Ok(())
+    }
+
+    /// Load history from file
+    pub async fn load_history<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        self.history.load_from_file(path).await
+    }
+
+    /// Save history to file
+    pub async fn save_history<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        self.history.save_to_file(path).await
+    }
+
+    /// Check if any special overlays are active
+    pub fn has_active_overlay(&self) -> bool {
+        self.file_browser.is_visible() || !self.completion.get_suggestions().unwrap_or(&[]).is_empty()
     }
 }
 

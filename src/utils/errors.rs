@@ -49,6 +49,9 @@ pub enum KaiError {
     #[error("Permission denied: {resource}")]
     PermissionDenied { resource: String },
 
+    #[error("Security error: {message}")]
+    Security { message: String },
+
     #[error("Resource not found: {resource}")]
     NotFound { resource: String },
 
@@ -208,6 +211,13 @@ impl KaiError {
         }
     }
 
+    /// Create a new security error
+    pub fn security<S: Into<String>>(message: S) -> Self {
+        Self::Security {
+            message: message.into(),
+        }
+    }
+
     /// Create a new not found error
     pub fn not_found<S: Into<String>>(resource: S) -> Self {
         Self::NotFound {
@@ -246,7 +256,7 @@ impl KaiError {
         match self {
             Self::Timeout { .. } | Self::Http(_) => true,
             Self::Authentication { .. } | Self::PermissionDenied { .. } => false,
-            Self::Validation { .. } | Self::InvalidPath { .. } => false,
+            Self::Security { .. } | Self::Validation { .. } | Self::InvalidPath { .. } => false,
             _ => true,
         }
     }
@@ -267,6 +277,7 @@ impl KaiError {
             Self::FileSystem { .. } => "filesystem",
             Self::InvalidPath { .. } => "path",
             Self::PermissionDenied { .. } => "permission",
+            Self::Security { .. } => "security",
             Self::NotFound { .. } => "notfound",
             Self::AlreadyExists { .. } => "exists",
             Self::Timeout { .. } => "timeout",
@@ -281,5 +292,13 @@ impl KaiError {
             Self::GlobPattern(_) => "glob",
             Self::Unknown { .. } => "unknown",
         }
+    }
+}
+
+// From trait implementations for error conversion
+
+impl From<inquire::InquireError> for KaiError {
+    fn from(error: inquire::InquireError) -> Self {
+        KaiError::ui(format!("User input error: {}", error))
     }
 }
