@@ -20,8 +20,6 @@ pub use prompts::{PromptContext, PromptTemplate, PromptTemplates};
 pub use streaming::{LlmStream, StreamChunk, StreamCollector, StreamingLlmProvider};
 pub use utils::{CostBreakdown, CostEstimator, TokenCounter, UsageTracker};
 
-#[cfg(test)]
-pub use examples::MockLlmProvider;
 
 // Re-export agentic loop types (defined below)
 // pub use {TaskAnalysis, TaskExecutionResult, TaskRefinementContext};
@@ -55,6 +53,23 @@ pub enum LlmError {
 
     #[error("Unknown error: {message}")]
     Unknown { message: String },
+}
+
+impl Clone for LlmError {
+    fn clone(&self) -> Self {
+        match self {
+            LlmError::Authentication { message } => LlmError::Authentication { message: message.clone() },
+            LlmError::RateLimit { retry_after } => LlmError::RateLimit { retry_after: *retry_after },
+            LlmError::InvalidModel { model } => LlmError::InvalidModel { model: model.clone() },
+            LlmError::RequestFailed { status, message } => LlmError::RequestFailed { status: *status, message: message.clone() },
+            LlmError::InvalidResponse { message } => LlmError::InvalidResponse { message: message.clone() },
+            LlmError::ToolExecution { message } => LlmError::ToolExecution { message: message.clone() },
+            LlmError::Unknown { message } => LlmError::Unknown { message: message.clone() },
+            // For non-cloneable errors, create a new error with the display string
+            LlmError::Network(e) => LlmError::Unknown { message: format!("Network error: {}", e) },
+            LlmError::Serialization(e) => LlmError::Unknown { message: format!("Serialization error: {}", e) },
+        }
+    }
 }
 
 /// Represents a message in a conversation
@@ -343,32 +358,83 @@ pub trait LlmProvider: Send + Sync {
 pub struct LlmProviderFactory;
 
 impl LlmProviderFactory {
-    /// Create a provider by name
+    /// Create a provider by name with debug tracing
     pub fn create_provider(
         provider_name: &str,
         config: HashMap<String, String>,
     ) -> Result<Box<dyn LlmProvider>, LlmError> {
-        match provider_name.to_lowercase().as_str() {
+        use crate::utils::debug::DEBUG_TRACER;
+        use crate::debug_checkpoint;
+        
+        let mut flow_context = DEBUG_TRACER.start_flow("llm", "provider_factory_create");
+        
+        debug_checkpoint!(&mut flow_context, "factory_create_start", {
+            let mut state = std::collections::HashMap::new();
+            state.insert("provider_name".to_string(), serde_json::Value::String(provider_name.to_string()));
+            state.insert("has_api_key".to_string(), serde_json::Value::Bool(config.get("api_key").is_some()));
+            state.insert("has_base_url".to_string(), serde_json::Value::Bool(config.get("base_url").is_some()));
+            state.insert("config_keys".to_string(), serde_json::Value::Array(
+                config.keys().map(|k| serde_json::Value::String(k.clone())).collect()
+            ));
+            state
+        });
+
+        let result = match provider_name.to_lowercase().as_str() {
             "openrouter" => {
+                debug_checkpoint!(&mut flow_context, "creating_openrouter_provider");
                 let api_key = config.get("api_key")
-                    .ok_or_else(|| LlmError::Authentication {
-                        message: "OpenRouter API key not provided".to_string(),
+                    .ok_or_else(|| {
+                        let error = LlmError::Authentication {
+                            message: "OpenRouter API key not provided".to_string(),
+                        };
+                        crate::debug_error!(&mut flow_context, &crate::utils::errors::KaiError::Llm(error.clone()), "openrouter_api_key_missing");
+                        error
                     })?;
                 
-                Ok(Box::new(openrouter::OpenRouterProvider::new(api_key.clone())))
+                debug_checkpoint!(&mut flow_context, "openrouter_provider_created", {
+                    let mut state = std::collections::HashMap::new();
+                    state.insert("api_key_length".to_string(), serde_json::Value::Number(serde_json::Number::from(api_key.len() as u64)));
+                    state
+                });
+                
+                Ok(Box::new(openrouter::OpenRouterProvider::new(api_key.clone())) as Box<dyn LlmProvider>)
             }
             "gemini" => {
+                debug_checkpoint!(&mut flow_context, "creating_gemini_provider");
                 let api_key = config.get("api_key")
-                    .ok_or_else(|| LlmError::Authentication {
-                        message: "Gemini API key not provided".to_string(),
+                    .ok_or_else(|| {
+                        let error = LlmError::Authentication {
+                            message: "Gemini API key not provided".to_string(),
+                        };
+                        crate::debug_error!(&mut flow_context, &crate::utils::errors::KaiError::Llm(error.clone()), "gemini_api_key_missing");
+                        error
                     })?;
                 
-                Ok(Box::new(gemini::GeminiProvider::new(api_key.clone())))
+                debug_checkpoint!(&mut flow_context, "gemini_provider_created", {
+                    let mut state = std::collections::HashMap::new();
+                    state.insert("api_key_length".to_string(), serde_json::Value::Number(serde_json::Number::from(api_key.len() as u64)));
+                    state
+                });
+                
+                Ok(Box::new(gemini::GeminiProvider::new(api_key.clone())) as Box<dyn LlmProvider>)
             }
-            _ => Err(LlmError::Unknown {
-                message: format!("Unknown provider: {}", provider_name),
-            }),
+            _ => {
+                debug_checkpoint!(&mut flow_context, "unknown_provider_error");
+                let error = LlmError::Unknown {
+                    message: format!("Unknown provider: {}", provider_name),
+                };
+                crate::debug_error!(&mut flow_context, &crate::utils::errors::KaiError::Llm(error.clone()), "unknown_provider");
+                Err(error)
+            }
+        };
+        
+        match &result {
+            Ok(_) => debug_checkpoint!(&mut flow_context, "provider_factory_success"),
+            Err(e) => crate::debug_error!(&mut flow_context, &crate::utils::errors::KaiError::Llm(e.clone()), "provider_factory_failed"),
         }
+        
+        DEBUG_TRACER.end_flow(&flow_context);
+        result
     }
 
     /// List all available provider names

@@ -1,16 +1,15 @@
 //! OpenRouter LLM provider implementation
 
 use super::{
-    FunctionDefinition, GenerationConfig, LlmError, LlmProvider, LlmResponse, Message,
+    GenerationConfig, LlmError, LlmProvider, LlmResponse, Message,
     ModelInfo, TokenUsage, ToolCall, ToolDefinition, TaskAnalysis, TaskExecutionResult, TaskRefinementContext,
 };
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
+use crate::utils::debug::DEBUG_TRACER;
+use crate::{debug_checkpoint, debug_error};
+use std::collections::HashMap;
 
 /// OpenRouter API provider
 pub struct OpenRouterProvider {
@@ -249,8 +248,21 @@ impl LlmProvider for OpenRouterProvider {
         tools: Option<&[ToolDefinition]>,
         config: Option<&GenerationConfig>,
     ) -> Result<LlmResponse, LlmError> {
+        let mut flow_context = DEBUG_TRACER.start_flow("openrouter", "generate");
+        
+        debug_checkpoint!(&mut flow_context, "generate_request_start", {
+            let mut state = HashMap::new();
+            state.insert("model".to_string(), serde_json::Value::String(model.to_string()));
+            state.insert("message_count".to_string(), serde_json::Value::Number(serde_json::Number::from(messages.len() as u64)));
+            state.insert("has_tools".to_string(), serde_json::Value::Bool(tools.is_some()));
+            state.insert("has_config".to_string(), serde_json::Value::Bool(config.is_some()));
+            state.insert("base_url".to_string(), serde_json::Value::String(self.base_url.clone()));
+            state
+        });
+        
         let operation = || async {
                 let url = format!("{}/chat/completions", self.base_url);
+                // Debug removed due to closure capture constraints
                 
                 let mut request_body = serde_json::json!({
                     "model": model,
@@ -285,6 +297,8 @@ impl LlmProvider for OpenRouterProvider {
                     request_body["tool_choice"] = "auto".into();
                 }
 
+                // Debug removed due to closure capture constraints
+
                 let response = self
                     .client
                     .post(&url)
@@ -292,6 +306,8 @@ impl LlmProvider for OpenRouterProvider {
                     .json(&request_body)
                     .send()
                     .await?;
+                    
+                // Debug removed due to closure capture constraints
 
                 if !response.status().is_success() {
                     let status = response.status().as_u16();
@@ -353,7 +369,30 @@ impl LlmProvider for OpenRouterProvider {
                 })
         };
         
-        self.execute_with_retry(operation).await
+        let result = self.execute_with_retry(operation).await;
+        
+        match &result {
+            Ok(response) => {
+                debug_checkpoint!(&mut flow_context, "generate_request_success", {
+                    let mut state = HashMap::new();
+                    state.insert("has_content".to_string(), serde_json::Value::Bool(response.content.is_some()));
+                    state.insert("has_tool_calls".to_string(), serde_json::Value::Bool(response.tool_calls.is_some()));
+                    state.insert("finish_reason".to_string(), serde_json::Value::String(response.finish_reason.clone()));
+                    if let Some(usage) = &response.usage {
+                        state.insert("total_tokens".to_string(), serde_json::Value::Number(
+                            serde_json::Number::from(usage.total_tokens as u64)
+                        ));
+                    }
+                    state
+                });
+            }
+            Err(e) => {
+                debug_error!(&mut flow_context, &crate::utils::errors::KaiError::Llm(e.clone()), "generate_request_failed");
+            }
+        }
+        
+        DEBUG_TRACER.end_flow(&flow_context);
+        result
     }
 
     async fn generate_plan(
@@ -366,7 +405,10 @@ impl LlmProvider for OpenRouterProvider {
         let template = super::prompts::PromptTemplates::plan_generation();
         let prompt_context = super::prompts::PromptContext::new()
             .with_variable("context", context)
-            .with_variable("request", prompt);
+            .with_variable("request", prompt)
+            .with_variable("working_directory", "/Users/dovcaspi/develop/KAI-X") // TODO: Pass actual working directory
+            .with_variable("project_type", "Rust application") // TODO: Detect project type
+            .with_variable("current_state", "Initial state"); // TODO: Get actual current state
         
         let (system_message, user_message) = template.fill(&prompt_context)
             .map_err(|e| LlmError::InvalidResponse {

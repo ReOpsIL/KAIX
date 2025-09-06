@@ -6,6 +6,11 @@ pub mod events;
 pub mod slash_commands;
 pub mod file_browser;
 pub mod clipboard;
+pub mod console_chat;
+
+use crate::utils::debug::DEBUG_TRACER;
+use crate::debug_checkpoint;
+use std::collections::HashMap;
 
 pub use services::{InputBufferService, HistoryService, CompletionService, EditingMode, TextSelection};
 pub use components::{ChatComponent, PlanComponent, StatusComponent, ApplicationStatus};
@@ -13,9 +18,15 @@ pub use events::{UiEvent, KeyEvent, InputEvent, SlashCommand};
 pub use slash_commands::SlashCommandProcessor;
 pub use file_browser::{FileBrowserComponent, FileEntry};
 pub use clipboard::{ClipboardManager, copy_to_clipboard, paste_from_clipboard, clipboard_has_content};
+pub use console_chat::ConsoleChat;
 
 use crate::utils::errors::KaiError;
 use crate::Result;
+use crate::llm::LlmProvider;
+use crate::config::ConfigManager;
+use crate::planning::manager::AgenticPlanningCoordinator;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -54,6 +65,14 @@ pub struct UiManager {
     working_directory: std::path::PathBuf,
     /// Clipboard manager for copy/paste operations
     clipboard: ClipboardManager,
+    /// ESC key press counter for exit functionality
+    esc_press_count: u32,
+    /// LLM provider for sending prompts
+    llm_provider: Option<Arc<dyn LlmProvider>>,
+    /// Configuration manager
+    config_manager: Option<ConfigManager>,
+    /// Planning manager for generating and executing plans
+    planning_manager: Option<Arc<RwLock<AgenticPlanningCoordinator>>>,
 }
 
 impl UiManager {
@@ -75,6 +94,39 @@ impl UiManager {
             event_receiver,
             working_directory,
             clipboard: ClipboardManager::new(),
+            esc_press_count: 0,
+            llm_provider: None,
+            config_manager: None,
+            planning_manager: None,
+        }
+    }
+
+    /// Create a new UI manager with core system components
+    pub fn with_core_systems(
+        config_manager: ConfigManager,
+        llm_provider: Arc<dyn LlmProvider>,
+        planning_manager: Arc<RwLock<AgenticPlanningCoordinator>>,
+        working_directory: std::path::PathBuf,
+    ) -> Self {
+        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+
+        Self {
+            input_buffer: InputBufferService::new(),
+            history: HistoryService::new(),
+            completion: CompletionService::new(),
+            file_browser: FileBrowserComponent::new(working_directory.clone()),
+            slash_processor: SlashCommandProcessor::new(event_sender.clone()),
+            chat_component: ChatComponent::new(),
+            plan_component: PlanComponent::new(),
+            status_component: StatusComponent::new(),
+            event_sender,
+            event_receiver,
+            working_directory,
+            clipboard: ClipboardManager::new(),
+            esc_press_count: 0,
+            llm_provider: Some(llm_provider),
+            config_manager: Some(config_manager),
+            planning_manager: Some(planning_manager),
         }
     }
 
@@ -100,23 +152,55 @@ impl UiManager {
 
     /// Run the main UI event loop
     pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        let mut flow_context = DEBUG_TRACER.start_flow("ui", "main_event_loop");
+        debug_checkpoint!(&mut flow_context, "event_loop_start");
+        
         loop {
             // Handle terminal events
             if event::poll(std::time::Duration::from_millis(100))
                 .map_err(|e| KaiError::ui(format!("Failed to poll events: {}", e)))? {
                 
                 if let Ok(event) = event::read() {
+                    debug_checkpoint!(&mut flow_context, "terminal_event_received", {
+                        let mut state = HashMap::new();
+                        state.insert("event_type".to_string(), serde_json::Value::String(format!("{:?}", event)));
+                        state
+                    });
+                    
                     match event {
                         Event::Key(key) => {
+                            debug_checkpoint!(&mut flow_context, "key_event_processing");
                             if let Some(ui_event) = self.handle_key_event(key).await? {
-                                // Send event to application
-                                if self.event_sender.send(ui_event).is_err() {
-                                    break; // Channel closed
+                                debug_checkpoint!(&mut flow_context, "ui_event_generated", {
+                                    let mut state = HashMap::new();
+                                    state.insert("ui_event_type".to_string(), serde_json::Value::String(format!("{:?}", ui_event)));
+                                    state
+                                });
+                                
+                                // Handle quit event directly to break the loop
+                                match ui_event {
+                                    UiEvent::Quit => {
+                                        debug_checkpoint!(&mut flow_context, "quit_event_received");
+                                        DEBUG_TRACER.end_flow(&flow_context);
+                                        return Ok(()); // Exit immediately
+                                    }
+                                    _ => {
+                                        // Send other events to application
+                                        if self.event_sender.send(ui_event).is_err() {
+                                            debug_checkpoint!(&mut flow_context, "event_channel_closed");
+                                            break; // Channel closed
+                                        }
+                                    }
                                 }
                             }
                         }
-                        Event::Resize(_, _) => {
-                            // Handle terminal resize
+                        Event::Resize(width, height) => {
+                            debug_checkpoint!(&mut flow_context, "terminal_resize", {
+                                let mut state = HashMap::new();
+                                state.insert("width".to_string(), serde_json::Value::Number(serde_json::Number::from(width as u64)));
+                                state.insert("height".to_string(), serde_json::Value::Number(serde_json::Number::from(height as u64)));
+                                state
+                            });
                         }
                         _ => {}
                     }
@@ -125,6 +209,11 @@ impl UiManager {
 
             // Handle UI events from the application
             while let Ok(ui_event) = self.event_receiver.try_recv() {
+                debug_checkpoint!(&mut flow_context, "ui_event_received", {
+                    let mut state = HashMap::new();
+                    state.insert("event_type".to_string(), serde_json::Value::String(format!("{:?}", ui_event)));
+                    state
+                });
                 self.handle_ui_event(ui_event).await?;
             }
 
@@ -134,6 +223,8 @@ impl UiManager {
             }).map_err(|e| KaiError::ui(format!("Failed to draw UI: {}", e)))?;
         }
 
+        debug_checkpoint!(&mut flow_context, "event_loop_end");
+        DEBUG_TRACER.end_flow(&flow_context);
         Ok(())
     }
 
@@ -168,14 +259,27 @@ impl UiManager {
 
         match key.code {
             KeyCode::Esc => {
-                // Hide file browser if visible, otherwise exit
+                // Hide file browser if visible
                 if self.file_browser.is_visible() {
                     self.file_browser.hide();
+                    self.esc_press_count = 0; // Reset counter when handling other UI elements
                     return Ok(None);
                 }
-                return Ok(Some(UiEvent::Quit));
+                
+                // Increment ESC press counter
+                self.esc_press_count += 1;
+                
+                // Exit after 3 consecutive ESC presses
+                if self.esc_press_count >= 3 {
+                    return Ok(Some(UiEvent::Quit));
+                }
+                
+                return Ok(None);
             }
             KeyCode::Enter => {
+                // Reset ESC counter on other key presses
+                self.esc_press_count = 0;
+                
                 // Submit current input
                 let input = self.input_buffer.get_content();
                 if !input.trim().is_empty() {
@@ -194,6 +298,9 @@ impl UiManager {
                 }
             }
             KeyCode::Tab => {
+                // Reset ESC counter on other key presses
+                self.esc_press_count = 0;
+                
                 // Handle completion
                 if let Some(completion) = self.completion.get_active_completion() {
                     self.input_buffer.apply_completion(&completion);
@@ -211,72 +318,7 @@ impl UiManager {
                     self.input_buffer.set_content(entry);
                 }
             }
-            KeyCode::Char(c) => {
-                // Handle character input
-                self.input_buffer.insert_char(c);
-                
-                let content = self.input_buffer.get_content();
-                let cursor_pos = self.input_buffer.cursor_position();
-                
-                // Check for special character triggers
-                if content.contains('@') {
-                    // Trigger file browser
-                    let lines: Vec<&str> = content.lines().collect();
-                    if cursor_pos.0 < lines.len() {
-                        let current_line = lines[cursor_pos.0];
-                        if let Some(at_pos) = current_line.rfind('@') {
-                            let query = &current_line[at_pos..];
-                            self.file_browser.trigger_browser(query).await?;
-                        }
-                    }
-                }
-                
-                // Update completions
-                self.completion.update_suggestions(&content, cursor_pos).await?;
-            }
-            KeyCode::Backspace => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    self.input_buffer.delete_word_backward();
-                } else {
-                    self.input_buffer.delete_backward();
-                }
-            }
-            KeyCode::Delete => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    self.input_buffer.delete_word_forward();
-                } else {
-                    self.input_buffer.delete_forward();
-                }
-            }
-            KeyCode::Left => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    self.input_buffer.move_cursor_word_backward();
-                } else {
-                    self.input_buffer.move_cursor_left();
-                }
-            }
-            KeyCode::Right => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    self.input_buffer.move_cursor_word_forward();
-                } else {
-                    self.input_buffer.move_cursor_right();
-                }
-            }
-            KeyCode::Home => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    self.input_buffer.move_cursor_to_document_start();
-                } else {
-                    self.input_buffer.move_cursor_to_line_start();
-                }
-            }
-            KeyCode::End => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    self.input_buffer.move_cursor_to_document_end();
-                } else {
-                    self.input_buffer.move_cursor_to_line_end();
-                }
-            }
-            // Additional Vim-like keybindings with Ctrl modifier
+            // Control+character combinations (must come before general Char pattern)
             KeyCode::Char('a') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 self.input_buffer.move_cursor_to_line_start();
             }
@@ -361,6 +403,74 @@ impl UiManager {
                         self.input_buffer.delete_to_line_end();
                         self.input_buffer.delete_forward(); // Delete the newline if any
                     }
+                }
+            }
+            KeyCode::Char(c) => {
+                // Reset ESC counter on other key presses
+                self.esc_press_count = 0;
+                
+                // Handle character input
+                self.input_buffer.insert_char(c);
+                
+                let content = self.input_buffer.get_content();
+                let cursor_pos = self.input_buffer.cursor_position();
+                
+                // Check for special character triggers
+                if content.contains('@') {
+                    // Trigger file browser
+                    let lines: Vec<&str> = content.lines().collect();
+                    if cursor_pos.0 < lines.len() {
+                        let current_line = lines[cursor_pos.0];
+                        if let Some(at_pos) = current_line.rfind('@') {
+                            let query = &current_line[at_pos..];
+                            self.file_browser.trigger_browser(query).await?;
+                        }
+                    }
+                }
+                
+                // Update completions
+                self.completion.update_suggestions(&content, cursor_pos).await?;
+            }
+            KeyCode::Backspace => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.delete_word_backward();
+                } else {
+                    self.input_buffer.delete_backward();
+                }
+            }
+            KeyCode::Delete => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.delete_word_forward();
+                } else {
+                    self.input_buffer.delete_forward();
+                }
+            }
+            KeyCode::Left => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_word_backward();
+                } else {
+                    self.input_buffer.move_cursor_left();
+                }
+            }
+            KeyCode::Right => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_word_forward();
+                } else {
+                    self.input_buffer.move_cursor_right();
+                }
+            }
+            KeyCode::Home => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_to_document_start();
+                } else {
+                    self.input_buffer.move_cursor_to_line_start();
+                }
+            }
+            KeyCode::End => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    self.input_buffer.move_cursor_to_document_end();
+                } else {
+                    self.input_buffer.move_cursor_to_line_end();
                 }
             }
             _ => {}
@@ -483,14 +593,37 @@ impl UiManager {
                 // Add user prompt to chat history
                 self.chat_component.add_message(
                     crate::ui::components::MessageRole::User,
-                    prompt,
+                    prompt.clone(),
                 );
+                
+                // Submit prompt to planning manager for plan generation and execution
+                if let Some(planning_manager_arc) = &self.planning_manager {
+                    use crate::planning::manager::PromptPriority;
+                    
+                    let planning_manager = planning_manager_arc.read().await;
+                    match planning_manager.submit_user_prompt(prompt, PromptPriority::Normal).await {
+                        Ok(prompt_id) => {
+                            self.chat_component.add_message(
+                                crate::ui::components::MessageRole::System,
+                                format!("📋 Submitted prompt for planning (ID: {})", prompt_id),
+                            );
+                        }
+                        Err(e) => {
+                            let error_msg = format!("❌ Failed to submit prompt: {}", e);
+                            self.chat_component.add_message(
+                                crate::ui::components::MessageRole::System,
+                                error_msg,
+                            );
+                        }
+                    }
+                }
             }
             _ => {}
         }
 
         Ok(())
     }
+
 
     /// Render the UI
     fn render(&self, f: &mut ratatui::Frame) {
@@ -569,8 +702,8 @@ impl UiManager {
         input_area: ratatui::layout::Rect,
         completions: &[String],
     ) {
-        use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
-        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::widgets::{Block, Borders, List, ListItem};
+        use ratatui::style::{Color, Style};
 
         let items: Vec<ListItem> = completions
             .iter()

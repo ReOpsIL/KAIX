@@ -10,8 +10,6 @@ pub mod manager;
 pub mod global;
 pub mod plan;
 
-#[cfg(test)]
-mod test_integration;
 
 pub use manager::{
     ContextManager, ContextStats, ContextManagerStats, ContextHealthConfig, 

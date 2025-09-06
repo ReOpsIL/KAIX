@@ -1,0 +1,200 @@
+# KAI-X Configuration File
+# This is the default configuration for the KAI-X AI coding assistant.
+# Place this file at ~/.config/kai-x/config.toml to customize your settings.
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# PROVIDER CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+# Currently active LLM provider (openrouter, gemini, openai, anthropic)
+active_provider = "openrouter"
+
+# Currently active model for the active provider
+active_model = "gemini-2.5-flash"
+
+# Working directory for the current session (optional)
+# If not set, uses the current directory when kai is launched
+# working_directory = "/path/to/your/project"
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# LLM PROVIDERS
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Note: API keys are read from environment variables, not stored in this file
+# Base URLs are hardcoded in the application for security
+
+[providers]
+
+[providers.openrouter]
+# API key is read from OPENROUTER_API_KEY environment variable
+# Base URL: https://openrouter.ai/api/v1 (hardcoded)
+default_model = "gemini-2.5-flash"
+
+[providers.gemini]
+# API key is read from GEMINI_API_KEY environment variable  
+# Base URL: https://generativelanguage.googleapis.com/v1beta (hardcoded)
+default_model = "gemini-2.5-flash"
+
+[providers.openai]
+# API key is read from OPENAI_API_KEY environment variable
+# Base URL: https://api.openai.com/v1 (hardcoded)
+default_model = "gpt-3.5-turbo"
+
+[providers.anthropic]
+# API key is read from ANTHROPIC_API_KEY environment variable
+# Base URL: https://api.anthropic.com (hardcoded)
+default_model = "claude-3-haiku-20240307"
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# USER INTERFACE SETTINGS
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+[ui]
+# Color theme: "light", "dark", or "auto" (follows system preference)
+theme = "auto"
+
+# Maximum number of commands to keep in history
+history_limit = 1000
+
+# Show progress indicators for long-running tasks
+show_progress = true
+
+# Enable auto-completion for file paths when typing @
+auto_complete_paths = true
+
+# Key bindings style: "default", "vim", or "emacs"
+key_bindings = "default"
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# CONTEXT MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+[context]
+# Maximum file size to include in context (bytes) - 1MB default
+max_file_size = 1048576
+
+# Maximum total context size (characters) - 100k default
+max_context_size = 100000
+
+# File extensions to prioritize when building context
+priority_extensions = [
+    "rs",     # Rust
+    "js",     # JavaScript
+    "ts",     # TypeScript
+    "py",     # Python
+    "java",   # Java
+    "go",     # Go
+    "cpp",    # C++
+    "c",      # C
+    "h",      # Header files
+    "hpp",    # C++ headers
+    "md",     # Markdown
+    "toml",   # TOML config
+    "json",   # JSON
+    "yaml",   # YAML
+    "yml",    # YAML alternate
+]
+
+# Patterns to exclude from context (supports glob patterns)
+exclude_patterns = [
+    "node_modules/**",
+    "target/**",
+    "dist/**",
+    "build/**",
+    ".git/**",
+    "*.exe",
+    "*.bin", 
+    "*.so",
+    "*.dll",
+    "*.zip",
+    "*.tar.gz",
+    "*.log",
+]
+
+# Generate detailed summaries for context files
+detailed_summaries = true
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# TASK EXECUTION
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+[execution]
+# Maximum number of tasks to run concurrently
+max_concurrent_tasks = 4
+
+# Default timeout for individual tasks (seconds) - 5 minutes default
+default_timeout_seconds = 300
+
+# Automatically retry failed tasks
+auto_retry = false
+
+# Maximum number of retry attempts
+max_retries = 3
+
+# Pause execution when a task fails (allows user intervention)
+pause_on_error = true
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# LOGGING CONFIGURATION  
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+
+# Write logs to file in addition to console
+log_to_file = false
+
+# Log file path (optional) - defaults to ~/.local/share/kai-x/logs/kai.log
+# log_file = "/path/to/your/logfile.log"
+
+# Include timestamps in log messages
+include_timestamps = true
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# SECURITY NOTES
+# ═══════════════════════════════════════════════════════════════════════════════════
+#
+# API Keys:
+# - Never store API keys in this configuration file
+# - API keys are read from environment variables:
+#   * OPENROUTER_API_KEY for OpenRouter
+#   * GEMINI_API_KEY for Google Gemini  
+#   * OPENAI_API_KEY for OpenAI
+#   * ANTHROPIC_API_KEY for Anthropic Claude
+#
+# Example environment variable setup:
+#   export OPENROUTER_API_KEY="your-openrouter-api-key-here"
+#   export GEMINI_API_KEY="your-gemini-api-key-here"
+#
+# Base URLs:
+# - Base URLs are hardcoded in the application for security
+# - Users cannot modify provider endpoints to prevent attacks
+#
+# Working Directory:
+# - All operations are sandboxed to the configured working directory
+# - File operations cannot access files outside this scope
+#
+# ═══════════════════════════════════════════════════════════════════════════════════
+# USAGE EXAMPLES
+# ═══════════════════════════════════════════════════════════════════════════════════
+#
+# Quick Start:
+# 1. Copy this file to ~/.config/kai-x/config.toml
+# 2. Set your API key: export OPENROUTER_API_KEY="your-key"
+# 3. Run: kai chat
+#
+# Add additional providers:
+# 1. kai provider add gemini
+# 2. export GEMINI_API_KEY="your-gemini-key" 
+# 3. kai provider set gemini
+#
+# Change working directory:
+# 1. kai --workdir /path/to/your/project
+# 2. Or modify working_directory in this config file
+#
+# Customize settings:
+# - Edit values in this file and restart kai
+# - Use slash commands like /model, /provider for quick changes
+# - Run 'kai status' to verify your configuration
+#
+# ═══════════════════════════════════════════════════════════════════════════════════

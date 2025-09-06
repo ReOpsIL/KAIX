@@ -3,7 +3,7 @@
 //! This file demonstrates how to use the core components of KAI-X
 //! in a programmatic way.
 
-use kai_x::{
+use KAI_X::{
     config::{Config, ConfigManager, ProviderConfig},
     context::{ContextConfig, ContextManager},
     execution::{ExecutionEngine, ExecutionConfig},

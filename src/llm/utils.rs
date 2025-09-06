@@ -1,6 +1,6 @@
 //! Utility functions for LLM operations including token counting and cost estimation
 
-use super::{LlmError, ModelInfo, TokenUsage};
+use super::TokenUsage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

@@ -130,6 +130,113 @@ pub enum ConfigError {
 }
 
 impl KaiError {
+    /// Create error from HTTP response with context
+    pub fn from_http_response(status: u16, body: &str, context: Option<&str>) -> Self {
+        let message = if let Some(ctx) = context {
+            format!("{}: HTTP {} - {}", ctx, status, body)
+        } else {
+            format!("HTTP {} - {}", status, body)
+        };
+        
+        match status {
+            401 | 403 => Self::authentication(message),
+            404 => Self::not_found(message),
+            429 => Self::provider("rate_limit", message),
+            500..=599 => Self::provider("server_error", message),
+            _ => Self::unknown(message),
+        }
+    }
+    
+    /// Create standardized provider authentication error
+    pub fn provider_auth_failed(provider: &str) -> Self {
+        Self::authentication(format!(
+            "Invalid API key or insufficient permissions for {}. Check your API key configuration.",
+            provider
+        ))
+    }
+    
+    /// Create standardized provider model not found error  
+    pub fn provider_model_not_found(provider: &str, model: &str) -> Self {
+        Self::not_found(format!(
+            "Model '{}' not found for provider '{}'. Check the model name and your access permissions.",
+            model, provider
+        ))
+    }
+    
+    /// Create standardized provider rate limit error
+    pub fn provider_rate_limited(provider: &str, retry_after: Option<u64>) -> Self {
+        let message = if let Some(seconds) = retry_after {
+            format!("Rate limit exceeded for {}. Retry after {} seconds.", provider, seconds)
+        } else {
+            format!("Rate limit exceeded for {}. Please wait before retrying.", provider)
+        };
+        Self::provider(provider, message)
+    }
+    
+    /// Create standardized network error with retry context
+    pub fn network_error_with_retry(error: reqwest::Error, attempt: usize, max_attempts: usize) -> Self {
+        let message = format!(
+            "Network error (attempt {}/{}): {}",
+            attempt + 1, max_attempts, error
+        );
+        Self::Http(error).with_context(message)
+    }
+    
+    /// Add context to an existing error
+    pub fn with_context<S: Into<String>>(mut self, context: S) -> Self {
+        match &mut self {
+            Self::Unknown { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Planning { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Context { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Execution { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Ui { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Task { message, .. } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Provider { message, .. } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Authentication { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Validation { message, .. } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::Security { message } => {
+                *message = format!("{}: {}", context.into(), message);
+            }
+            Self::NotFound { resource } => {
+                *resource = format!("{}: {}", context.into(), resource);
+            }
+            Self::AlreadyExists { resource } => {
+                *resource = format!("{}: {}", context.into(), resource);
+            }
+            Self::PermissionDenied { resource } => {
+                *resource = format!("{}: {}", context.into(), resource);
+            }
+            Self::Cancelled { operation } => {
+                *operation = format!("{}: {}", context.into(), operation);
+            }
+            _ => {
+                // For errors that don't have mutable message fields,
+                // wrap in a new unknown error with context
+                let original = format!("{}", self);
+                return Self::unknown(format!("{}: {}", context.into(), original));
+            }
+        }
+        self
+    }
+    
     /// Create a new planning error
     pub fn planning<S: Into<String>>(message: S) -> Self {
         Self::Planning {

@@ -144,7 +144,7 @@ pub struct TaskAnalysisCollector {
 
 /// Sections of task refinement streaming
 #[derive(Debug, Clone, PartialEq)]
-enum RefinementSection {
+pub enum RefinementSection {
     Context,
     Analysis,
     Instruction,

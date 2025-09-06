@@ -1,6 +1,6 @@
 //! UI event types for communication between components
 
-use crate::planning::{Plan, Task, TaskResult};
+use crate::planning::{Plan, TaskResult};
 
 /// Main UI event types
 #[derive(Debug, Clone)]

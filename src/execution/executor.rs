@@ -340,7 +340,7 @@ impl TaskExecutor {
             .kill_on_drop(true); // Ensure cleanup if cancelled
 
         match cmd.spawn() {
-            Ok(mut child) => {
+            Ok(child) => {
                 let output = tokio::time::timeout(
                     Duration::from_secs(self.config.default_timeout_seconds),
                     child.wait_with_output()
@@ -1030,7 +1030,7 @@ impl TaskExecutor {
 
 /// Security audit entry for logging operations
 #[derive(Debug, Clone)]
-struct SecurityAuditEntry {
+pub struct SecurityAuditEntry {
     task_id: String,
     operation: String,
     path: PathBuf,

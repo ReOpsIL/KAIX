@@ -1,15 +1,13 @@
 //! Google Gemini LLM provider implementation
 
 use super::{
-    FunctionDefinition, GenerationConfig, LlmError, LlmProvider, LlmResponse, Message,
-    MessageRole, ModelInfo, ModelPricing, TokenUsage, ToolCall, ToolDefinition,
+    GenerationConfig, LlmError, LlmProvider, LlmResponse, Message,
+    MessageRole, ModelInfo, TokenUsage, ToolCall, ToolDefinition,
     TaskAnalysis, TaskExecutionResult, TaskRefinementContext,
 };
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 

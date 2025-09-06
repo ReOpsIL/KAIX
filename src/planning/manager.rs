@@ -621,7 +621,7 @@ impl AgenticPlanningCoordinator {
     /// 4. Execute Tool
     /// 5. LLM Post-Execution Analysis
     /// 6. Update State and Loop
-    async fn execute_task_with_full_agentic_loop(&self, mut task: Task) -> Result<()> {
+    async fn execute_task_with_full_agentic_loop(&self, task: Task) -> Result<()> {
         let task_start_time = Instant::now();
         
         tracing::info!("Starting agentic loop for task: {} ({})", task.description, task.id);

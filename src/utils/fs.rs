@@ -3,10 +3,8 @@
 use crate::context::ContextConfig;
 use crate::utils::errors::KaiError;
 use crate::Result;
-use ignore::{Walk, WalkBuilder};
+use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
-use tokio::fs;
-use std::collections::HashSet;
 
 /// File discovery configuration
 #[derive(Debug, Clone)]
