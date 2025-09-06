@@ -14,7 +14,7 @@ active_model = "gemini-2.5-flash"
 
 # Working directory for the current session (optional)
 # If not set, uses the current directory when kai is launched
-# working_directory = "/path/to/your/project"
+working_directory = "temp_workdir"
 
 # ═══════════════════════════════════════════════════════════════════════════════════
 # LLM PROVIDERS

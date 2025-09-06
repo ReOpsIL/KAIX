@@ -522,8 +522,13 @@ async fn run_interactive_mode(cli: Cli, flow_context: &mut KAI_X::utils::debug::
     debug_checkpoint!(flow_context, "interactive_mode_start");
     info!("Starting interactive mode");
     
-    // Initialize core systems (simplified)
-    let config_manager = ConfigManager::new()?;
+    // Initialize core systems properly (following the spec)
+    let (config_manager, _context_manager, execution_engine, _planning_manager) = initialize_core_systems(cli.workdir).await?;
+    
+    // Get working directory from config (validated during initialization)
+    let working_dir = config_manager.config().working_directory.clone()
+        .ok_or_else(|| KAI_X::utils::errors::KaiError::not_found("Working directory not set"))?;
+    
     let config = config_manager.config();
     
     // Create LLM provider
@@ -543,10 +548,19 @@ async fn run_interactive_mode(cli: Cli, flow_context: &mut KAI_X::utils::debug::
     )?;
     let llm_provider: Arc<dyn LlmProvider> = Arc::from(provider_box);
     
-    info!("🤖 KAI-X console chat ready");
+    // Start the execution engine in the background
+    let execution_engine_for_loop = execution_engine.clone();
+    let _execution_handle = tokio::spawn(async move {
+        let engine = execution_engine_for_loop.read().await;
+        if let Err(e) = engine.start().await {
+            eprintln!("Execution engine error: {}", e);
+        }
+    });
     
-    // Run simple console chat instead of complex TUI
-    let mut console_chat = ConsoleChat::new(llm_provider);
+    info!("🤖 KAI-X console chat ready with execution engine");
+    
+    // Run console chat with proper execution engine integration
+    let mut console_chat = ConsoleChat::new(llm_provider, execution_engine, working_dir);
     console_chat.run().await
 }
 
@@ -684,8 +698,31 @@ async fn initialize_core_systems(
         workdir
     } else {
         config_manager.config().working_directory.clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap())
+            .ok_or_else(|| KAI_X::utils::errors::KaiError::not_found(
+                "No working directory specified. Use --workdir /path/to/project to set working directory"
+            ))?
     };
+
+    // Validate working directory is not the source directory
+    let current_dir = std::env::current_dir().unwrap_or_default();
+    if working_dir == current_dir {
+        return Err(KAI_X::utils::errors::KaiError::validation(
+            "workdir",
+            format!("Cannot use KAI-X source directory as workdir ({}). Use --workdir to specify a different project directory", current_dir.display())
+        ));
+    }
+
+    // Create working directory if it doesn't exist
+    if !working_dir.exists() {
+        info!("Creating working directory: {}", working_dir.display());
+        std::fs::create_dir_all(&working_dir)
+            .map_err(|e| KAI_X::utils::errors::KaiError::file_system(&working_dir, e))?;
+    } else if !working_dir.is_dir() {
+        return Err(KAI_X::utils::errors::KaiError::validation(
+            "workdir",
+            format!("Working directory path exists but is not a directory: {}", working_dir.display())
+        ));
+    }
 
     info!("Working directory: {}", working_dir.display());
 

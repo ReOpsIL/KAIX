@@ -2,9 +2,12 @@
 
 use crate::llm::LlmProvider;
 use crate::planning::{Plan, TaskStatus, PlanStatus};
+use crate::execution::{ExecutionEngine, PromptPriority};
 use crate::Result;
 use std::io::{self, Write};
 use std::sync::Arc;
+use std::path::PathBuf;
+use tokio::sync::RwLock;
 use colored::*;
 
 #[derive(Debug, Clone)]
@@ -33,20 +36,29 @@ impl std::fmt::Display for MessageRole {
 
 pub struct ConsoleChat {
     llm_provider: Arc<dyn LlmProvider>,
+    execution_engine: Arc<RwLock<ExecutionEngine>>,
+    working_directory: PathBuf,
     messages: Vec<ChatMessage>,
 }
 
 impl ConsoleChat {
-    pub fn new(llm_provider: Arc<dyn LlmProvider>) -> Self {
+    pub fn new(
+        llm_provider: Arc<dyn LlmProvider>,
+        execution_engine: Arc<RwLock<ExecutionEngine>>,
+        working_directory: PathBuf,
+    ) -> Self {
         Self {
             llm_provider,
+            execution_engine,
+            working_directory,
             messages: Vec::new(),
         }
     }
     
     pub async fn run(&mut self) -> Result<()> {
-        // Simple welcome
+        // Simple welcome with working directory display
         println!("{}", "🤖 KAI-X AI Assistant".bright_green().bold());
+        println!("{} {}", "📁 Working directory:".bright_blue(), self.working_directory.display().to_string().bright_yellow());
         println!("{}", "Type your requests below. Use 'exit' to quit, 'clear' to clear chat.".dimmed());
         println!();
         
@@ -89,10 +101,9 @@ impl ConsoleChat {
             print!("{} ", "🤔".bright_yellow());
             io::stdout().flush()?;
             
-            // Generate response
-            match self.generate_response(input).await {
+            // Generate and execute response
+            match self.generate_and_execute_plan(input).await {
                 Ok(plan) => {
-                    self.display_plan(&plan);
                     self.add_message(MessageRole::Assistant, plan.description.clone());
                 }
                 Err(e) => {
@@ -108,16 +119,43 @@ impl ConsoleChat {
         Ok(())
     }
     
-    async fn generate_response(&self, input: &str) -> Result<Plan> {
-        // Build basic context
-        let global_context = self.build_context().await?;
+    async fn generate_and_execute_plan(&self, input: &str) -> Result<Plan> {
+        // Start by submitting the user prompt to the execution engine
+        let prompt_id = {
+            let engine = self.execution_engine.read().await;
+            engine.submit_user_prompt(input.to_string(), PromptPriority::Normal).await
+        };
         
-        // Generate plan using existing LLM provider
-        let plan = self.llm_provider
-            .generate_plan(input, &global_context, "anthropic/claude-3-haiku")
-            .await?;
+        println!("🔄 Plan queued with ID: {}", prompt_id);
+        println!("⏳ Waiting for plan generation...");
         
-        Ok(plan)
+        // Get the current plan (the execution engine will generate it)
+        // We'll poll for a plan to appear
+        let mut attempts = 0;
+        let max_attempts = 100; // 10 seconds with 100ms intervals (increased timeout)
+        
+        while attempts < max_attempts {
+            let plan = {
+                let engine = self.execution_engine.read().await;
+                engine.get_current_plan().await
+            };
+            if let Some(plan) = plan {
+                println!("✅ Plan generated: {}", plan.description);
+                self.display_plan_with_execution_status(&plan).await;
+                return Ok(plan);
+            }
+            
+            // Show progress every second
+            if attempts % 10 == 0 && attempts > 0 {
+                println!("⏳ Still waiting... ({}/{}s)", attempts / 10, max_attempts / 10);
+            }
+            
+            attempts += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        println!("❌ Timeout waiting for plan generation after {}s", max_attempts / 10);
+        Err(crate::utils::errors::KaiError::execution("Timeout waiting for plan generation".to_string()))
     }
     
     async fn build_context(&self) -> Result<String> {
@@ -135,6 +173,89 @@ impl ConsoleChat {
             content,
             timestamp: chrono::Utc::now(),
         });
+    }
+    
+    async fn display_plan_with_execution_status(&self, plan: &Plan) {
+        println!(); // Space before plan
+        
+        // Plan description
+        println!("{}", plan.description.bright_cyan());
+        
+        // Monitor task execution in real-time
+        let mut _last_task_count = 0;
+        let mut completed_tasks = std::collections::HashSet::new();
+        
+        // Initial display of tasks
+        for (i, task) in plan.tasks.iter().enumerate() {
+            let status_symbol = self.get_task_symbol(&task.status);
+            let task_color = self.get_task_color(&task.status);
+            
+            println!("{}  {}. {}", 
+                status_symbol,
+                (i + 1).to_string().bright_yellow(),
+                task.description.color(task_color)
+            );
+        }
+        
+        // Monitor execution progress
+        let mut monitoring_attempts = 0;
+        let max_monitoring_time = 300; // 30 seconds of monitoring
+        
+        while monitoring_attempts < max_monitoring_time {
+            let current_plan = {
+                let engine = self.execution_engine.read().await;
+                engine.get_current_plan().await
+            };
+            if let Some(current_plan) = current_plan {
+                let mut all_completed = true;
+                let mut _has_changes = false;
+                
+                for (i, task) in current_plan.tasks.iter().enumerate() {
+                    if task.status != TaskStatus::Completed && task.status != TaskStatus::Failed {
+                        all_completed = false;
+                    }
+                    
+                    // Check if this task status changed
+                    let task_key = format!("{}:{}", i, task.id);
+                    if !completed_tasks.contains(&task_key) {
+                        if task.status == TaskStatus::Completed || task.status == TaskStatus::Failed {
+                            completed_tasks.insert(task_key);
+                            _has_changes = true;
+                            
+                            let status_symbol = self.get_task_symbol(&task.status);
+                            let task_color = self.get_task_color(&task.status);
+                            
+                            // Update this specific line
+                            print!("\r{} {}. {}", 
+                                status_symbol,
+                                (i + 1).to_string().bright_yellow(),
+                                task.description.color(task_color)
+                            );
+                            println!(); // Move to next line
+                        }
+                    }
+                }
+                
+                if all_completed {
+                    break;
+                }
+            }
+            
+            monitoring_attempts += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        // Final plan status
+        let final_plan = {
+            let engine = self.execution_engine.read().await;
+            engine.get_current_plan().await
+        };
+        if let Some(current_plan) = final_plan {
+            if current_plan.status != PlanStatus::Ready {
+                let status_color = self.get_plan_status_color(&current_plan.status);
+                println!("\n{} {}", "Status:".dimmed(), format!("{:?}", current_plan.status).color(status_color));
+            }
+        }
     }
     
     fn display_plan(&self, plan: &Plan) {
