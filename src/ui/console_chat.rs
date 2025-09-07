@@ -132,7 +132,7 @@ impl ConsoleChat {
         // Get the current plan (the execution engine will generate it)
         // We'll poll for a plan to appear
         let mut attempts = 0;
-        let max_attempts = 100; // 10 seconds with 100ms intervals (increased timeout)
+        let max_attempts = 600; // 60 seconds with 100ms intervals (increased timeout for complex planning)
         
         while attempts < max_attempts {
             let plan = {

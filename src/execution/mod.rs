@@ -21,6 +21,30 @@ pub mod queue;
 pub use executor::TaskExecutor;
 pub use queue::{TaskQueue, QueuePriority};
 
+/// Analysis of why a task failed
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TaskFailureAnalysis {
+    pub summary: String,
+    pub error_category: String,
+    pub root_cause: String,
+    pub suggested_alternatives: Vec<String>,
+}
+
+/// Response structure for alternative task generation
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AlternativeTasksResponse {
+    pub tasks: Vec<AlternativeTaskSpec>,
+}
+
+/// Specification for an alternative task
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AlternativeTaskSpec {
+    pub description: String,
+    pub task_type: TaskType,
+    pub parameters: serde_json::Value,
+    pub dependencies: Vec<String>,
+}
+
 /// Main execution engine that orchestrates plan execution with parallelization and monitoring
 pub struct ExecutionEngine {
     /// Context manager for global and plan contexts
@@ -722,8 +746,11 @@ impl ExecutionEngine {
 
                 // Handle retry logic if enabled
                 if self.config.auto_retry {
-                    // TODO: Implement retry logic
-                    warn!("Retry logic not yet implemented for failed task: {}", result.task_id);
+                    // Implement adaptive task decomposition for failures
+                    if let Err(decomp_error) = self.handle_adaptive_task_decomposition(&result.task_id, &e).await {
+                        error!("Failed to perform adaptive task decomposition for task {}: {}", result.task_id, decomp_error);
+                        warn!("Falling back to simple retry for failed task: {}", result.task_id);
+                    }
                 }
 
                 // Pause on error if configured
@@ -734,6 +761,174 @@ impl ExecutionEngine {
             }
         }
 
+        Ok(())
+    }
+
+    /// Handle adaptive task decomposition when a task fails
+    async fn handle_adaptive_task_decomposition(&self, task_id: &str, error: &KaiError) -> Result<()> {
+        info!("🔄 Starting adaptive task decomposition for failed task: {}", task_id);
+        
+        // Step 1: Retrieve the failed task from the current plan
+        let failed_task = {
+            let plan = self.current_plan.read().await;
+            if let Some(plan) = &*plan {
+                plan.tasks.iter()
+                    .find(|task| task.id == task_id)
+                    .cloned()
+            } else {
+                None
+            }
+        };
+
+        let failed_task = match failed_task {
+            Some(task) => task,
+            None => {
+                error!("Could not find failed task {} in current plan", task_id);
+                return Err(KaiError::execution(format!("Task {} not found in current plan", task_id)));
+            }
+        };
+
+        // Step 2: Analyze the failure with LLM
+        let failure_analysis = self.analyze_task_failure(&failed_task, error).await?;
+        info!("📊 Failure analysis complete: {}", failure_analysis.summary);
+
+        // Step 3: Generate alternative task decomposition
+        let alternative_tasks = self.generate_alternative_tasks(&failed_task, &failure_analysis).await?;
+        info!("🔨 Generated {} alternative tasks for failed task", alternative_tasks.len());
+
+        // Step 4: Add alternative tasks to the queue
+        self.add_alternative_tasks_to_queue(alternative_tasks).await?;
+        info!("✅ Alternative tasks added to execution queue");
+
+        Ok(())
+    }
+
+    /// Analyze why a task failed using LLM
+    async fn analyze_task_failure(&self, task: &Task, error: &KaiError) -> Result<TaskFailureAnalysis> {
+        let prompt = format!(r#"
+Analyze this failed task and provide insight into why it failed and how to fix it.
+
+Task Details:
+- Description: {}
+- Type: {:?}
+- Dependencies: {:?}
+- Parameters: {}
+
+Error Details:
+- Error: {}
+
+Please provide a JSON response with the following structure:
+{{
+    "summary": "Brief summary of why the task failed",
+    "error_category": "One of: dependency_missing, command_not_found, permission_denied, network_error, syntax_error, resource_exhausted, timeout, other",
+    "root_cause": "Detailed explanation of the root cause",
+    "suggested_alternatives": [
+        "Alternative approach 1",
+        "Alternative approach 2"
+    ]
+}}
+"#, 
+            task.description,
+            task.task_type,
+            task.dependencies,
+            serde_json::to_string_pretty(&task.parameters).unwrap_or_default(),
+            error
+        );
+
+        let response = self.llm_provider
+            .generate_content(&prompt, "", &self.model, None)
+            .await
+            .map_err(|e| KaiError::provider("llm", format!("Failed to analyze task failure: {}", e)))?;
+
+        let analysis: TaskFailureAnalysis = serde_json::from_str(&response)
+            .map_err(|e| KaiError::unknown(format!("Failed to parse failure analysis: {}", e)))?;
+
+        Ok(analysis)
+    }
+
+    /// Generate alternative tasks using LLM
+    async fn generate_alternative_tasks(&self, failed_task: &Task, analysis: &TaskFailureAnalysis) -> Result<Vec<Task>> {
+        let prompt = format!(r#"
+Based on this failed task and failure analysis, generate alternative tasks that should accomplish the same goal.
+
+Failed Task:
+- Description: {}
+- Type: {:?}
+- Parameters: {}
+
+Failure Analysis:
+- Summary: {}
+- Root Cause: {}
+- Error Category: {}
+
+Context:
+- Break down the original task into smaller, more specific tasks
+- Address the root cause identified in the analysis
+- Use more robust approaches (e.g., check dependencies first, use alternative tools)
+- Keep the same overall goal but use different implementation strategies
+
+Please provide a JSON response with the following structure:
+{{
+    "tasks": [
+        {{
+            "description": "Detailed description of the alternative task",
+            "task_type": "One of: FileRead, FileWrite, ShellCommand, HttpRequest, Analysis",
+            "parameters": {{
+                "key": "value pairs specific to the task type"
+            }},
+            "dependencies": []
+        }}
+    ]
+}}
+"#,
+            failed_task.description,
+            failed_task.task_type,
+            serde_json::to_string_pretty(&failed_task.parameters).unwrap_or_default(),
+            analysis.summary,
+            analysis.root_cause,
+            analysis.error_category
+        );
+
+        let response = self.llm_provider
+            .generate_content(&prompt, "", &self.model, None)
+            .await
+            .map_err(|e| KaiError::provider("llm", format!("Failed to generate alternative tasks: {}", e)))?;
+
+        let alternative_response: AlternativeTasksResponse = serde_json::from_str(&response)
+            .map_err(|e| KaiError::unknown(format!("Failed to parse alternative tasks: {}", e)))?;
+
+        // Convert to proper Task structs with generated IDs
+        let mut alternative_tasks = Vec::new();
+        for (index, task_spec) in alternative_response.tasks.into_iter().enumerate() {
+            let task = Task {
+                id: format!("{}-alt-{}", failed_task.id, index + 1),
+                description: task_spec.description,
+                task_type: task_spec.task_type,
+                parameters: {
+                    if let serde_json::Value::Object(obj) = task_spec.parameters {
+                        obj.into_iter().collect()
+                    } else {
+                        std::collections::HashMap::new()
+                    }
+                },
+                dependencies: task_spec.dependencies,
+                status: crate::planning::TaskStatus::Pending,
+                result: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+            alternative_tasks.push(task);
+        }
+
+        Ok(alternative_tasks)
+    }
+
+    /// Add alternative tasks to the execution queue
+    async fn add_alternative_tasks_to_queue(&self, tasks: Vec<Task>) -> Result<()> {
+        let mut queue = self.main_task_queue.write().await;
+        for task in tasks {
+            queue.add_task(task, QueuePriority::High); // Use high priority for alternative tasks
+        }
         Ok(())
     }
 
