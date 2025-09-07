@@ -1,5 +1,7 @@
 # KAI-X Data Flow Diagrams
 
+**Last Updated**: September 6, 2025 - Updated for current console interface implementation
+
 This document illustrates how data flows through the KAI-X system during various operations.
 
 ## Agentic Application Data Flow

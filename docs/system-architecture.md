@@ -8,93 +8,88 @@ This document contains the architecture diagrams for the KAI-X AI coding assista
 graph TB
     subgraph "User Interface Layer"
         CLI[CLI Interface]
-        ChatUI[Chat Component]
-        PlanUI[Plan Visualization]
-        StatusUI[Status Component]
-        ProgressUI[Progress Component]
-        InputService[Input Buffer Service]
-        HistoryService[History Service]
-        CompletionService[Completion Service]
+        ConsoleChat[Console Chat Interface]
+        SlashCommands[Slash Commands Parser]
+        FileBrowser[File System Browser]
     end
     
     subgraph "Core Application"
         Main[main.rs - Entry Point]
         Config[Configuration Manager]
         Context[Context Manager]
-        UI[UI Manager]
     end
     
     subgraph "AI Processing Layer"
-        LLM[LLM Provider Factory]
+        LLMFactory[LLM Provider Factory]
         OpenRouter[OpenRouter Provider]
         Gemini[Gemini Provider]
+        Prompts[Prompt Templates]
         Streaming[Streaming Support]
     end
     
     subgraph "Execution Layer"
         Engine[Execution Engine]
         Executor[Task Executor]
-        Queue[Task Queue System]
+        DualQueue[Dual-Queue System]
+        AgenticCoord[Agentic Planning Coordinator]
+        AdaptiveDecomp[Adaptive Task Decomposition]
     end
     
     subgraph "Planning & Context"
-        AgenticCoordinator[Agentic Planning Coordinator]
-        PlanContext[Enhanced Plan Context]
-        GlobalContext[Advanced Global Context]
-        HealthMonitor[Context Health Monitor]
-        MemoryManager[Context Memory Manager]
+        PlanningMgr[Planning Manager]
+        PlanContext[Plan Context]
+        GlobalContext[Global Context]
     end
     
     subgraph "Utilities & Support"
-        Utils[Path Utils]
+        Debug[Debug System]
+        Templates[Template System]
+        HttpRetry[HTTP Retry Logic]
         FileSystem[File System Operations]
         Logging[Logging System]
     end
     
     %% User Interface connections
     CLI --> Main
-    ChatUI --> UI
-    PlanUI --> UI
-    StatusUI --> UI
-    ProgressUI --> UI
-    InputService --> UI
-    HistoryService --> UI
-    CompletionService --> UI
+    ConsoleChat --> Engine
+    SlashCommands --> Config
+    FileBrowser --> FileSystem
     
     %% Core Application connections
     Main --> Config
     Main --> Context
     Main --> Engine
-    Main --> UI
-    Main --> LLM
+    Main --> ConsoleChat
+    Main --> LLMFactory
     
     %% AI Processing connections
-    LLM --> OpenRouter
-    LLM --> Gemini
-    LLM --> Streaming
-    Engine --> LLM
-    AgenticCoordinator --> LLM
+    LLMFactory --> OpenRouter
+    LLMFactory --> Gemini
+    Engine --> LLMFactory
+    AgenticCoord --> LLMFactory
+    Prompts --> Templates
     
     %% Execution Layer connections
     Engine --> Executor
-    Engine --> Queue
-    Engine --> AgenticCoordinator
+    Engine --> DualQueue
+    Engine --> AgenticCoord
+    Engine --> AdaptiveDecomp
     Executor --> FileSystem
-    Executor --> Utils
+    AdaptiveDecomp --> LLMFactory
     
     %% Context connections
     Context --> GlobalContext
     Context --> PlanContext
-    Context --> HealthMonitor
-    Context --> MemoryManager
-    AgenticCoordinator --> PlanContext
-    AgenticCoordinator --> Context
+    AgenticCoord --> PlanContext
+    AgenticCoord --> Context
     Engine --> Context
+    PlanningMgr --> Context
     
     %% Support connections
-    Config --> Utils
-    Executor --> Logging
-    Engine --> Logging
+    Config --> Debug
+    Executor --> Debug
+    Engine --> Debug
+    Templates --> Prompts
     
     %% External integrations
     OpenRouter -.-> Internet[External AI APIs]

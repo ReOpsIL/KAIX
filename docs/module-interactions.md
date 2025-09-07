@@ -1,5 +1,7 @@
 # KAI-X Module Interactions
 
+**Last Updated**: September 6, 2025 - Updated to reflect current implementation with console interface and adaptive task decomposition
+
 This document illustrates the detailed interactions and dependencies between different modules in the KAI-X system.
 
 ## Module Dependency Graph

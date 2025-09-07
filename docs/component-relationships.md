@@ -1,5 +1,7 @@
 # KAI-X Component Relationships
 
+**Last Updated**: September 6, 2025 - Updated to reflect current console-based implementation
+
 This document provides detailed views of component relationships within each module and their internal architectures.
 
 ## Execution Engine Internal Architecture
@@ -7,26 +9,39 @@ This document provides detailed views of component relationships within each mod
 ```mermaid
 classDiagram
     class ExecutionEngine {
-        +queue: TaskQueue
-        +executor: TaskExecutor
-        +state: ExecutionState
-        +config: ExecutionConfig
-        +new() ExecutionEngine
+        +user_prompt_queue: VecDeque~UserPrompt~
+        +main_task_queue: VecDeque~Task~
+        +task_executor: Arc~TaskExecutor~
+        +llm_provider: Arc~dyn LlmProvider~
+        +context_manager: Arc~RwLock~ContextManager~~
+        +state: Arc~RwLock~ExecutionState~~
+        +cancellation_token: CancellationToken
         +start() Result~()~
-        +stop() Result~()~
-        +pause() Result~()~
-        +resume() Result~()~
-        +execute_task() Result~TaskExecutionResult~
+        +submit_user_prompt() Uuid
+        +handle_adaptive_task_decomposition() Result~Vec~Task~~
+        +analyze_task_failure() Result~TaskFailureAnalysis~
+        +generate_alternative_tasks() Result~Vec~Task~~
     }
     
     class TaskExecutor {
-        +config: ExecutionConfig
-        +new() TaskExecutor
-        +execute() Result~TaskExecutionResult~
-        -execute_read_file() Result~TaskExecutionResult~
-        -execute_write_file() Result~TaskExecutionResult~
-        -execute_command() Result~TaskExecutionResult~
-        -execute_analyze_code() Result~TaskExecutionResult~
+        +working_dir: PathBuf
+        +security_audit: SecurityAuditLog
+        +resource_tracker: ResourceTracker
+        +execute_task() Result~TaskResult~
+        +validate_path_security() Result~()~
+        -execute_read_file() Result~TaskResult~
+        -execute_write_file() Result~TaskResult~
+        -execute_bash_command() Result~TaskResult~
+        -execute_create_directory() Result~TaskResult~
+    }
+    
+    class AgenticPlanningCoordinator {
+        +llm_provider: Arc~dyn LlmProvider~
+        +context_manager: Arc~RwLock~ContextManager~~
+        +model: String
+        +process_user_prompt() Result~Plan~
+        +analyze_and_refine_plan() Result~Plan~
+        +dequeue_and_process_tasks() Result~()~
     }
     
     class TaskQueue {

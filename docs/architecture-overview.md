@@ -52,43 +52,55 @@ This directory contains comprehensive architecture documentation for the KAI-X A
 
 ## 🏗️ System Overview
 
-KAI-X is a sophisticated Rust-based AI coding assistant that follows a modular, layered architecture:
+KAI-X is a sophisticated Rust-based AI coding assistant that follows a modular, layered architecture with console-based interaction:
 
 ### Core Architecture Layers
-1. **User Interface Layer**: CLI interface, terminal UI components, and event system
-2. **Core Application Layer**: Main entry point, configuration manager, context manager, and UI manager
-3. **AI Processing Layer**: LLM provider factory, OpenRouter/Gemini providers, and streaming support
-4. **Execution Layer**: Execution engine, task executor, and queue management
-5. **Planning & Context Layer**: Planning manager, plan context, and global context
-6. **Utilities & Support Layer**: Path utilities, file system operations, and logging
+1. **User Interface Layer**: Console chat interface, CLI interface, and input/output handling
+2. **Core Application Layer**: Main entry point, configuration manager, context manager
+3. **AI Processing Layer**: LLM provider abstraction, OpenRouter/Gemini providers, prompt templates
+4. **Execution Layer**: Execution engine, task executor, dual-queue system, adaptive task decomposition
+5. **Planning & Context Layer**: Planning manager, global context, plan context
+6. **Utilities & Support Layer**: Debug system, file operations, HTTP retry logic, templates
 
 ### Key Architectural Patterns
-- **Modular Design**: Clear separation of concerns
-- **Async/Await**: Extensive asynchronous programming
-- **Trait-based Abstraction**: Flexible AI provider implementations
-- **Factory Pattern**: Dynamic provider creation
-- **Event-Driven UI**: Responsive user interface
-- **Context Management**: Centralized state management
+- **Console-based Interface**: Simple, efficient terminal interaction (moved from TUI to console)
+- **Async/Await**: Extensive asynchronous programming with tokio runtime
+- **Trait-based Abstraction**: Flexible LLM provider implementations (LlmProvider trait)
+- **Dual-Queue System**: High-priority user prompts + main task execution queue
+- **Adaptive Task Decomposition**: LLM-powered failure analysis and alternative task generation
+- **Security-first Design**: Strict workdir validation and sandboxing
+- **Context Management**: Global project context + temporary plan context
 
 ## 🔄 System Flow Summary
 
-1. **Initialization**: Configuration loading → Context initialization → Core system setup
-2. **User Interaction**: CLI parsing → UI event handling → Command processing
-3. **AI Processing**: Request formatting → Provider selection → API calls → Response streaming
-4. **Task Execution**: Plan generation → Task queuing → Individual task execution → Result analysis
-5. **Context Management**: State updates → Context merging → Persistent storage
+1. **Initialization**: Configuration loading → Workdir validation → Context initialization → ExecutionEngine setup
+2. **User Interaction**: Console input → Prompt queuing → Plan generation → Task execution monitoring
+3. **AI Processing**: Prompt templates → Provider selection → API calls → Structured JSON responses
+4. **Task Execution**: Plan generation → Task decomposition → Individual task execution → Adaptive failure handling
+5. **Context Management**: File monitoring → Context updates → Plan context maintenance
+
+## 🚀 Current Implementation Status
+
+- ✅ **Console Chat Interface**: Fully implemented, replacing TUI framework
+- ✅ **Configuration System**: Complete TOML-based configuration with environment variable support
+- ✅ **LLM Providers**: OpenRouter and Gemini implementations with streaming support
+- ✅ **Execution Engine**: Dual-queue system with concurrent task processing
+- ✅ **Adaptive Task Decomposition**: LLM-powered failure analysis and alternative generation
+- ✅ **Security Validation**: Workdir enforcement and path validation
+- ✅ **Debug System**: Comprehensive debug tracing with configurable levels
+- ✅ **Context Management**: Global context with file change monitoring
 
 ## 🧩 Module Responsibilities
 
 | Module | Primary Function | Key Components |
 |--------|-----------------|----------------|
-| **config** | Configuration management | ConfigManager, ConfigData structures |
+| **config** | Configuration management | ConfigManager, TomlConfigProvider, ConfigData |
 | **context** | State and context management | ContextManager, GlobalContext, PlanContext |
-| **execution** | Task orchestration | ExecutionEngine, TaskExecutor, TaskQueue |
-| **llm** | AI provider abstraction | LlmProvider trait, OpenRouter/Gemini implementations |
-| **planning** | Intelligent task planning | PlanningManager, Plan structures |
-| **ui** | User interface | UiManager, Components, Event system |
-| **utils** | Common utilities | PathUtils, FileSystem operations |
+| **execution** | Task orchestration & adaptive decomposition | ExecutionEngine, TaskExecutor, AgenticPlanningCoordinator |
+| **llm** | AI provider abstraction | LlmProvider trait, OpenRouter/Gemini providers, PromptTemplates |
+| **planning** | Intelligent task planning | PlanningManager, Plan/Task structures |
+| **ui** | Console interface | ConsoleChat, UiManager, SlashCommands, FileSystemBrowser |
+| **utils** | Common utilities | Debug system, HTTP retry, Templates, FileSystem operations |
 
 ## 📋 Usage Guide
 
@@ -134,6 +146,17 @@ All diagrams are created using [Mermaid](https://mermaid.js.org/) syntax for:
 
 ---
 
-**Last Updated**: 2025-09-04
-**Version**: 1.0
-**Maintainer**: Development Team
+**Last Updated**: 2025-09-06  
+**Version**: 1.1 (Console Interface Implementation)  
+**Maintainer**: Development Team  
+
+## 📊 Recent Major Changes
+
+### v1.1 (September 2025)
+- **UI Architecture Change**: Migrated from TUI framework (ratatui) to simple console-based chat interface
+- **Adaptive Task Decomposition**: Added LLM-powered failure analysis and alternative task generation
+- **Enhanced Security**: Implemented strict workdir validation and path sandboxing
+- **Debug System**: Comprehensive debug tracing with KAI_DEBUG environment variable support
+- **Configuration System**: Complete TOML-based configuration with environment variable integration
+- **Execution Engine**: Dual-queue system with concurrent task processing and real-time status updates
+- **Plan Generation Timeout**: Extended timeout from 10s to 60s for complex project planning
