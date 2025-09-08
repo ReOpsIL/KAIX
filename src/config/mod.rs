@@ -131,7 +131,7 @@ impl Default for Config {
         
         Self {
             active_provider: "openrouter".to_string(),
-            active_model: "anthropic/claude-3-haiku".to_string(),
+            active_model: "google/gemini-2.5-pro".to_string(),
             working_directory: None,
             providers,
             ui: UiConfig::default(),
@@ -148,11 +148,11 @@ impl ProviderConfig {
         let (base_url, default_model) = match provider_name.to_lowercase().as_str() {
             "openrouter" => (
                 Some("https://openrouter.ai/api/v1".to_string()),
-                Some("anthropic/claude-3-haiku".to_string()),
+                Some("google/gemini-2.5-pro".to_string()),
             ),
             "gemini" => (
                 Some("https://generativelanguage.googleapis.com/v1beta".to_string()),
-                Some("gemini-pro".to_string()),
+                Some("gemini-2.5-pro".to_string()),
             ),
             "openai" => (
                 Some("https://api.openai.com/v1".to_string()),

@@ -48,7 +48,7 @@ mod examples {
         let context = PromptContext::new()
             .with_variable("context", "Working on a Rust web application")
             .with_variable("request", "Add authentication middleware")
-            .with_variable("working_directory", "/tmp/test-project")
+            .with_variable("working_directory", "./test-project")
             .with_variable("project_type", "Rust web application")
             .with_variable("current_state", "Basic web server with routes implemented");
             

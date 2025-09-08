@@ -45,7 +45,7 @@ async fn configuration_example() -> Result<()> {
     
     config_manager.set_provider_config("openrouter".to_string(), provider_config)?;
     config_manager.set_active_provider("openrouter".to_string())?;
-    config_manager.set_active_model("anthropic/claude-3-haiku".to_string())?;
+    config_manager.set_active_model("google/gemini-2.5-pro".to_string())?;
     
     // Set working directory
     config_manager.set_working_directory(std::env::current_dir()?)?;

@@ -523,6 +523,13 @@ impl GlobalContext {
     pub fn get_summary(&self) -> String {
         let mut summary = String::new();
         
+        // Include working directory information
+        summary.push_str("Working Directory: ");
+        summary.push_str(&self.working_directory.display().to_string());
+        summary.push_str("\n");
+        summary.push_str("CRITICAL: All file operations must use relative paths within this working directory.\n");
+        summary.push_str("IMPORTANT: This is a fresh project workspace. Do not assume any existing project structure or technology stack.\n\n");
+        
         if let Some(project_summary) = &self.project_summary {
             summary.push_str("Project Overview:\n");
             summary.push_str(project_summary);
@@ -533,11 +540,17 @@ impl GlobalContext {
         let mut sorted_files: Vec<_> = self.file_contexts.keys().collect();
         sorted_files.sort();
 
-        for relative_path in sorted_files {
-            if let Some(context) = self.file_contexts.get(relative_path) {
-                summary.push_str(&format!("- {}: {}\n", 
-                    relative_path.display(), 
-                    context.summary.lines().next().unwrap_or("No summary available")));
+        if sorted_files.is_empty() {
+            summary.push_str("- (Empty directory - no existing files)\n");
+            summary.push_str("- This is a clean workspace. Choose appropriate technology stack based on the user request.\n");
+            summary.push_str("- Do not assume this is a Rust, Node.js, Python or any specific type of project.\n");
+        } else {
+            for relative_path in sorted_files {
+                if let Some(context) = self.file_contexts.get(relative_path) {
+                    summary.push_str(&format!("- {}: {}\n", 
+                        relative_path.display(), 
+                        context.summary.lines().next().unwrap_or("No summary available")));
+                }
             }
         }
 

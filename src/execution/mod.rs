@@ -361,6 +361,9 @@ impl ExecutionEngine {
         let context_manager = self.context_manager.read().await;
         let global_context = context_manager.get_global_context_summary().await?;
 
+        // Debug: Log the context being passed to LLM
+        tracing::info!("📋 [CONTEXT-DEBUG] Global context being passed to LLM:\n{}", global_context);
+
         // Generate a new plan
         let plan = self.llm_provider
             .generate_plan(&prompt.content, &global_context, &self.model)

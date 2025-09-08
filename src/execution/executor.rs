@@ -41,9 +41,17 @@ impl TaskExecutor {
     ) -> Self {
         info!("Creating TaskExecutor with working_dir: {:?}", working_dir);
         
+        // Canonicalize the working directory to handle symlinks properly (e.g., /tmp -> /private/tmp on macOS)
+        let canonical_working_dir = working_dir.canonicalize()
+            .unwrap_or_else(|_| working_dir.clone()); // Use original if canonicalize fails
+        
+        if canonical_working_dir != working_dir {
+            info!("Canonicalized working directory from {:?} to {:?}", working_dir, canonical_working_dir);
+        }
+        
         Self {
             config,
-            working_dir,
+            working_dir: canonical_working_dir,
             llm_provider,
             model,
             audit_log: Vec::new(),
@@ -649,12 +657,30 @@ impl TaskExecutor {
             self.working_dir.join(&requested_path)
         };
         
+        // Canonicalize target path if it already exists, otherwise use as-is for comparison
+        let canonical_target = if target_path.exists() {
+            target_path.canonicalize().unwrap_or_else(|_| target_path.clone())
+        } else {
+            // For non-existent paths, we need to canonicalize the parent and append the final component
+            let parent = target_path.parent().unwrap_or(&target_path);
+            let file_name = target_path.file_name();
+            if let Some(canonical_parent) = parent.canonicalize().ok() {
+                if let Some(name) = file_name {
+                    canonical_parent.join(name)
+                } else {
+                    canonical_parent
+                }
+            } else {
+                target_path.clone()
+            }
+        };
+        
         // Ensure target is within working directory
-        if !target_path.starts_with(&self.working_dir) {
+        if !canonical_target.starts_with(&self.working_dir) {
             self.log_security_audit(SecurityAuditEntry {
                 task_id: task.id.clone(),
                 operation: "create_directory".to_string(),
-                path: target_path.clone(),
+                path: canonical_target.clone(),
                 timestamp: SystemTime::now(),
                 allowed: false,
                 reason: Some("Path outside working directory".to_string()),
@@ -665,7 +691,7 @@ impl TaskExecutor {
                 output: None,
                 error: Some(format!(
                     "Cannot create directory outside working directory: {}",
-                    target_path.display()
+                    canonical_target.display()
                 )),
                 stdout: None,
                 stderr: None,
@@ -679,13 +705,13 @@ impl TaskExecutor {
         self.log_security_audit(SecurityAuditEntry {
             task_id: task.id.clone(),
             operation: "create_directory".to_string(),
-            path: target_path.clone(),
+            path: canonical_target.clone(),
             timestamp: SystemTime::now(),
             allowed: true,
             reason: None,
         });
         
-        debug!("Creating directory: {:?}", target_path);
+        debug!("Creating directory: {:?}", canonical_target);
         
         match fs::create_dir_all(&target_path).await {
             Ok(_) => {

@@ -10,11 +10,11 @@
 active_provider = "openrouter"
 
 # Currently active model for the active provider
-active_model = "gemini-2.5-flash"
+active_model = "gemini-2.5-pro"
 
 # Working directory for the current session (optional)
 # If not set, uses the current directory when kai is launched
-working_directory = "temp_workdir"
+working_directory = "/Users/dovcaspi/tmp"
 
 # ═══════════════════════════════════════════════════════════════════════════════════
 # LLM PROVIDERS
@@ -27,12 +27,12 @@ working_directory = "temp_workdir"
 [providers.openrouter]
 # API key is read from OPENROUTER_API_KEY environment variable
 # Base URL: https://openrouter.ai/api/v1 (hardcoded)
-default_model = "gemini-2.5-flash"
+default_model = "gemini-2.5-pro"
 
 [providers.gemini]
 # API key is read from GEMINI_API_KEY environment variable  
 # Base URL: https://generativelanguage.googleapis.com/v1beta (hardcoded)
-default_model = "gemini-2.5-flash"
+default_model = "gemini-2.5-pro"
 
 [providers.openai]
 # API key is read from OPENAI_API_KEY environment variable

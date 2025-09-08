@@ -129,7 +129,7 @@ impl ProviderUtils {
     /// Get default model for provider
     pub fn get_default_model(provider_name: &str) -> Option<String> {
         match provider_name.to_lowercase().as_str() {
-            "openrouter" => Some("anthropic/claude-3-haiku".to_string()),
+            "openrouter" => Some("google/gemini-2.5-pro".to_string()),
             "gemini" => Some("gemini-pro".to_string()),
             "openai" => Some("gpt-3.5-turbo".to_string()),
             "anthropic" => Some("claude-3-haiku-20240307".to_string()),
@@ -168,7 +168,7 @@ impl ProviderMetadata {
                 display_name: "OpenRouter".to_string(),
                 description: "Access to multiple LLM providers through OpenRouter".to_string(),
                 base_url: Some("https://openrouter.ai/api/v1".to_string()),
-                default_model: Some("anthropic/claude-3-haiku".to_string()),
+                default_model: Some("google/gemini-2.5-pro".to_string()),
                 supports_streaming: true,
                 supports_tools: true,
                 requires_api_key: true,

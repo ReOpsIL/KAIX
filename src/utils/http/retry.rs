@@ -17,7 +17,7 @@ impl Default for RetryConfig {
         Self {
             max_attempts: 3,
             base_delay: Duration::from_millis(1000),
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_secs(240),
             exponential_backoff: true,
         }
     }
@@ -170,7 +170,7 @@ mod tests {
         let config = RetryConfig {
             max_attempts: 3,
             base_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(240),
             exponential_backoff: false,
         };
         
@@ -199,7 +199,7 @@ mod tests {
         let config = RetryConfig {
             max_attempts: 2,
             base_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(240),
             exponential_backoff: false,
         };
         
@@ -226,7 +226,7 @@ mod tests {
         let config = RetryConfig {
             max_attempts: 3,
             base_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(240),
             exponential_backoff: false,
         };
         

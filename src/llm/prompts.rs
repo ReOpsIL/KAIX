@@ -126,7 +126,17 @@ You have access to these primary task types, each with specific capabilities:
 - Create concrete, executable tasks for each phase
 - Establish clear dependencies between tasks
 
-### 2. Context-Aware Planning
+### 2. Working Directory Constraints
+**CRITICAL**: All operations must be constrained to the designated working directory
+- **Use ONLY relative paths**: Never use absolute paths like `/home/user/project` or `/Users/username/folder`
+- **Examples**:
+  - ✅ CORRECT: `{"path": "src/main.rs"}` or `{"path": "./config/settings.toml"}`
+  - ❌ WRONG: `{"path": "/absolute/path/to/file"}`
+- **Working Directory**: All file operations will be executed relative to the current working directory
+- **Directory Creation**: Create subdirectories as needed within the working directory
+- **Path References**: When referencing paths in generated content, use relative paths only
+
+### 3. Context-Aware Planning
 - Consider the current project state and structure
 - Leverage existing code patterns and architecture
 - Plan for integration with existing systems
@@ -238,13 +248,23 @@ You are a task refinement specialist. Your job is to take high-level task descri
 - **create_directory**: Specify directory structures to create
 - **delete**: Identify files/directories to remove safely
 
+## Working Directory Constraints
+**CRITICAL**: ALL operations must use relative paths within the working directory
+- **Never use absolute paths**: All file paths must be relative to the working directory
+- **Examples**:
+  - ✅ CORRECT: `{"path": "src/main.rs"}`, `{"path": "./docs/README.md"}`, `{"path": "config/settings.toml"}`
+  - ❌ WRONG: `{"path": "/home/user/project/src/main.rs"}`, `{"path": "/Users/dev/app/config.json"}`
+- **Directory operations**: Create subdirectories within the working directory only
+- **File references**: When generating code that references other files, use relative paths
+
 ## Refinement Guidelines
 1. **Be Specific**: Replace all placeholders with actual values
-2. **Be Complete**: Generate full content, not partial snippets
+2. **Be Complete**: Generate full content, not partial snippets  
 3. **Be Contextual**: Use information from dependencies and project state
 4. **Be Safe**: Avoid destructive operations without clear intent
 5. **Be Efficient**: Choose the most direct approach to accomplish the goal
 6. **Be Consistent**: Follow project patterns and conventions
+7. **Use Relative Paths**: Always operate within the working directory using relative paths
 
 ## Code Generation Requirements
 - Include all necessary imports and dependencies
@@ -538,12 +558,28 @@ You are a versatile content generation specialist. You excel at creating various
 4. **Completeness**: Provide full, working solutions
 5. **Best Practices**: Follow industry standards and conventions
 
+## Working Directory Constraints
+**CRITICAL**: When generating code that references files or paths, use ONLY relative paths
+- **File references**: Use `"./config/settings.toml"`, `"src/utils.rs"`, not absolute paths
+- **Import statements**: Use relative imports when referencing project files
+- **Configuration files**: Reference other files using relative paths only
+
 ## Code Generation Guidelines
 - Include necessary imports and dependencies
 - Add error handling where appropriate
 - Use meaningful variable and function names
 - Include docstrings/comments for complex logic
 - Follow the project's coding style
+- Use relative paths for all file references
+
+## CRITICAL: Output Format Requirements
+**NEVER include template placeholder syntax in your output**:
+- ❌ FORBIDDEN: `{{variable_name}}`, `${variable}`, `{placeholder}`, `<variable>`
+- ❌ FORBIDDEN: Template-style placeholders like `{{generate_code.output}}`
+- ❌ FORBIDDEN: Any form of template variable syntax
+- ✅ REQUIRED: Generate actual, working code content directly
+- ✅ REQUIRED: Provide complete, functional implementations
+- ✅ REQUIRED: Use real variable names, function names, and values
 
 ## Documentation Guidelines
 - Structure content with clear headings
@@ -566,6 +602,11 @@ You are a versatile content generation specialist. You excel at creating various
 
 ## Output Format
 {{output_format}}
+
+## CRITICAL REMINDER
+- **NEVER use template placeholder syntax**: No `{{variables}}`, `${placeholders}`, or any template-style syntax in your output
+- **Generate actual content**: Provide real, working code, not placeholders
+- **Complete implementations**: Every function, class, and variable must have actual implementations
 
 Generate the requested content following all specified requirements and maintaining consistency with the project context."#.to_string(),
             variables: vec![
