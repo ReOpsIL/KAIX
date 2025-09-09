@@ -1,4 +1,4 @@
-✦ Of course. The "Core Agent Loop / Reasoning Engine" is the heart of Codex. It's the component that orchestrates everything else, acting as the "CPU" or the "brain" of the agent.
+ The "Core Agent Loop / Reasoning Engine" is the heart. It's the component that orchestrates everything else, acting as the "CPU" or the "brain" of the agent.
 
 Its fundamental purpose is to answer one question over and over again: "Based on what I know right now, what is the very next action I should take to achieve the user's goal?"
 
