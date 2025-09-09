@@ -1,4 +1,4 @@
-# Codex Architecture Diagram
+# KAI-X Architecture Diagram
 
 This diagram illustrates the major modules of the Codex architecture and the flow of a typical user request.
 
